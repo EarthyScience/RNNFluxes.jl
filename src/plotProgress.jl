@@ -14,8 +14,8 @@ end
 
 function plotSummary(lossesTrain, lossesVali,w,xNorm,yNorm,pred)
       gr()
-      display(plot([lossesTrain, lossesVali],color=["blue" "orange"]))
-      display(plot(vec(pred), vec(yNorm), line=:scatter, color=:black, markeralpha=0.05))
+      display(plot([lossesTrain, lossesVali],color=["blue" "orange"], fmt=:png))
+      display(plot(vec(pred), vec(yNorm), line=:scatter, color=:black, markeralpha=0.05, fmt=:png))
       println("Correlation: ", cor(vec(pred), vec(yNorm)))
 end
 
