@@ -12,10 +12,12 @@ function plotSignal(y)
     plot([epIdx, y[3], epIdx, [0,1]],[y[1],y[4], y[2],[0,1]], line=[:line :scatter :line :line], color=["blue" "black" "orange" "red"],markeralpha=0.05, layout=2,fmt=:png)
 end
 
-function plotSummary(lossesTrain, lossesVali,w,xNorm,yNorm,pred)
+function plotSummary(model)
       gr()
-      display(plot([lossesTrain, lossesVali],color=["blue" "orange"]))
-      display(plot(vec(pred), vec(yNorm), line=:scatter, color=:black, markeralpha=0.05))
+      yNorm=model.yNorm
+      pred=predFunc(w,xNorm)
+      display(plot([model.lossesTrain, model.lossesVali],color=["blue" "orange"],fmt=:png))
+      display(plot(vec(pred), vec(yNorm), line=:scatter, color=:black, markeralpha=0.05,fmt=:png))
       println("Correlation: ", cor(vec(pred), vec(yNorm)))
 end
 

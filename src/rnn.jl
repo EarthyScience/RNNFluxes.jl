@@ -1,12 +1,12 @@
 module RNN
 import Plots: scatter!, plot
-import Reactive: Signal
+import Reactive: Signal, value
 import Interact: checkbox
 import ..Update: Adam, update!
 import ..PlotProgress: plotSignal, plotSummary
 import StatsBase: sample
 using Knet
-export iniWeights, train_net, predict_after_train
+export iniWeights, train_net, predict_after_train, loadSeasonal, RNNModel
 #import Interact: checkbox
 ### Predict function using the ragged Array directly (deprecated)
 function predict(w, x)
@@ -112,7 +112,6 @@ function iniWeights(nVarX::Int=3, nHid::Int=12, NNtype="RNN")
             0.0 * rand(Float64, 1, nHid),  ## Bias to hidden initialized to zero
             0.0 * rand(Float64, 1)] ## bias to output to zero
         weights=raggedToVector(weights)
-
     end
     return weights
 end
@@ -122,30 +121,64 @@ function mseLoss(w, x, y, predFunc)
     return sumabs2(predFunc(w, x) .- y) / size(y,2)
 end
 
-#### Top-level for fitting Timeseries with different ANN architechtures
-#### Here Hyperparameters will be set etc.
+"""
+    abstract FluxModel
+
+A supertype for all models to be defined within this package
+"""
+abstract FluxModel
+
+"""
+    type RNN
+
+Implementation of an RNN.
+"""
+type RNNModel <: FluxModel
+  weights::Vector{Float64}
+  nHid::Int
+  nVarX::Int
+  lossFunc::Function
+  trainTask::Task
+  lossesTrain::Vector{Float64}
+  lossesVali::Vector{Float64}
+  yMin::Float64
+  yMax::Float64
+  yNorm::Array{Float64,3}
+  xNorm::Array{Float64,3}
+  xEx::Vector{Tuple{Float64,Float64}}
+  interruptSignal::Signal{Bool}
+end
+function RNNModel(nVar,nHid,w=iniWeights(nVar,nHid,"RNN"))
+
+  totalNweights=nVar*nHid + nHid * nHid + 2*nHid + 1
+
+  length(w) == totalNweights ||  error("Length of weights $(size(weights,1)) does not match needed length $totalNweights!")
+  RNNModel(w,nHid,0,identity,Task(identity),Float64[],Float64[],NaN,NaN,zeros(0,0,0),zeros(0,0,0),Tuple{Float64,Float64}[],Signal(false))
+end
+
+getPredFunc(::RNNModel)=RNNpredict
+
+function train(model::RNNModel,x,y,nEpoch=201;kwargs...)
+  model.trainTask=@schedule train_net(model,x,y,nEpoch;kwargs...)
+  sleep(1)
+end
 
 #Training:
 ## Input x[nTimes, nSamples, nVar]
 ##       y[nTimes, nSamples]
 ##       nEpochs
 function train_net(
+    model::FluxModel,
     # Predictors, target and number of Epochs (y is still 1 variable only, can be changed to multioutput, but for us I don't see an urgent application)
     x, y, nEpoch=201;
     ## defines how a prediction is turned into a loss-Value (e.g. sum of squares, sum of abs, weighted squares etc..)
     lossFunc=mseLoss,
     ## defines the predict function (RNN, LSTM, or could be any model!!)
-    predFunc=RNNpredict,
-    ## number of hidden nodes
-    nHid=12,
-    ### the initial weights (e.g. weights from a previous training can be used to start of well already)
-    ### Yet, what is still not nice: one has to re-enter the type of model. Maybe better to define a model type
-    ### which contains all the info, including the hidden nodes etc.
-    weights=iniWeights(size(x,3),nHid, NNtpye="RNN"),
+    predFunc=getPredFunc(model),
     ## How many samples are used in each epoch
     batchSize=1,
     ## Define search algorithm including parameters
-    searchParams = Adam(weights; lr=0.01, beta1=0.9, beta2=0.95, t=1, eps=1e-6, fstm=zeros(weights), scndm=zeros(weights)),
+    searchParams = Adam(model.weights; lr=0.01, beta1=0.9, beta2=0.95, t=1, eps=1e-6, fstm=zeros(model.weights), scndm=zeros(model.weights)),
     ### How often will be intermediate output given
     infoStepSize=100,
     ### Also graphical output via the react/interact interface?
@@ -153,13 +186,9 @@ function train_net(
     )
 
     nTimes, nSamp, nVarX=size(x)
-    totalNweights=nVarX*nHid + nHid * nHid + 2*nHid + 1
 
-    size(weights,1) == totalNweights ||  error("Length of weights $(size(weights,1)) does not match needed length $totalNweights!")
-
-
-    lossesTrain = Array(Float64, nEpoch)
-    lossesVali = Array(Float64, nEpoch)
+    lossesTrain = model.lossesTrain
+    lossesVali = model.lossesVali
 
     ## Define the used loss-Function based on the method to predict and the function defining how the predictions
     ## are compared with the data (default is Mean Squared Error across sequences)
@@ -175,6 +204,8 @@ function train_net(
     for v in 1:size(xEx,1);
         xNorm[:,:,v] = 2.0.* ((x[:,:,v]-xEx[v][1])/(xEx[v][2]-xEx[v][1])-0.5)
     end
+    model.yNorm, model.xNorm = yNorm, xNorm
+    model.yMin, model.yMax, model.xEx = yMin, yMax, xEx
 
     ## Split data set for cross-validation
     ## Could be parameterized in the function call later!!
@@ -203,7 +234,7 @@ function train_net(
     #display(plot(layer(x = vec(xNorm)[1:1000], y = vec(x)[1:1000], Geom.point)))
 
 
-    w = weights
+    w = model.weights
 
     info("Starting training....")
     info( length(trainIdx), " Training samples, ",  length(valiIdx), " Validation samples. " )
@@ -212,16 +243,21 @@ function train_net(
     ### Loss before training
     lossesPreTrain=loss(w, xNorm[:, trainIdx,:], yNorm[:, trainIdx, :])
     lossesPreVali=loss(w, xNorm[:, valiIdx,:], yNorm[:, valiIdx, :])
-    println("Before training loss, Training set: ", lossesPreTrain, " Validation: ", lossesPreVali)
+    info("Before training loss, Training set: ", lossesPreTrain, " Validation: ", lossesPreVali)
+
+    irsig=model.interruptSignal
 
     ### Just for plotting performace select not too many points (otherwise my notebook freezes etc)
     if plotProgress
+
+      cb=checkbox(label="Interrupt",signal=irsig)
+      display(cb)
       plotSample = sample(1:length(yNorm[:, trainIdx, :]), min(1000,length(yNorm[:, trainIdx, :])) , replace=false)
-
       yvals=Signal((rand(200), rand(200), rand(1000).*10, rand(1000)./10))
-
       display(map(plotSignal, yvals))
+
     end
+
 
     ### Here would be could if one could stop the loop based on user input to a checkbox (does not work)
     ### (Fabian knows what mean)
@@ -229,7 +265,9 @@ function train_net(
    # display(b)
    # quitLoop=Signal(b.value)
 
-    for i=1:nEpoch;
+    for i=1:nEpoch
+
+        value(irsig) && break
         ### Batch approach: cylce randomly through subset of samples (==> more stochasticitym better performance (in theory))
         ### I don't understand why the performance does not get much better with smaller batches
         nTrSamp = length(trainIdx)
@@ -244,8 +282,8 @@ function train_net(
         ### Loss on training set and on validation set
         ### Early stopping based on the validation set could be implemented (when validation loss gets worse again)
         ### but it will be heuristic, because one has to smooth the loss series (with batch there is noise)
-        lossesTrain[i]=loss(w, xNorm[:, trainIdx,:], yNorm[:, trainIdx, :])
-        lossesVali[i]=loss(w, xNorm[:, valiIdx,:], yNorm[:, valiIdx, :])
+        push!(lossesTrain,loss(w, xNorm[:, trainIdx,:], yNorm[:, trainIdx, :]))
+        push!(lossesVali,loss(w, xNorm[:, valiIdx,:], yNorm[:, valiIdx, :]))
 
         ### Output
         if rem(i, infoStepSize) == 1
@@ -254,38 +292,27 @@ function train_net(
             curPredAll=predFunc(w, xNorm)
             #println(typeof(yNorm))
             if plotProgress
-              newData=(lossesTrain[1:max(200,i)], lossesVali[1:max(200,i)],vec(curPredAll[:, trainIdx,:])[plotSample], vec(yNorm[:,trainIdx,:])[plotSample])
+              newData=(lossesTrain, lossesVali,vec(curPredAll[:, trainIdx,:])[plotSample], vec(yNorm[:,trainIdx,:])[plotSample])
               plotProgress && push!(yvals, newData)
             end
         end
-
-    ### Here would be could if one could stop the loop based on user input to a checkbox (does not work)
-    ### (Fabian knows what mean)
-        # push!(quitLoop, b.value)
-        #println(quitLoop, b)
-        #if quitLoop.value == true; break; end
     end
-    plotSummary(lossesTrain, lossesVali,w,xNorm,yNorm,predFunc(w,xNorm))
-    sleep(2)
-    return (predFunc, w, lossesTrain, lossesVali, (yMin, yMax), xEx)
+    return model
 end
 
 ### Given the trained model this function does predictions on another data set
 ### it also does the back-transform of the predicted values from (0,1) to original range
 ### whole thing should be improved. An object of Type TrainedModel should be used or sth like a list in R
-function predict_after_train(trainResultTuple, x)
+function predict_after_train(model::FluxModel, x)
 
+    #istaskdone(model.trainTask) || error("Training not finished yet")
     xNorm=copy(x)
-    xEx=trainResultTuple[6]
-    yMin, yMax = trainResultTuple[5]
-    predFunc=trainResultTuple[1]
-    w=trainResultTuple[2]
 
-    for v in 1:size(xEx,1);
-       xNorm[:,:,v] = 2.0.* ((x[:,:,v]-xEx[v][1])/(xEx[v][2]-xEx[v][1])-0.5)
+    for v in 1:size(model.xEx,1);
+       xNorm[:,:,v] = 2.0.* ((x[:,:,v]-model.xEx[v][1])/(model.xEx[v][2]-model.xEx[v][1])-0.5)
     end
-     yNorm = predFunc(w, xNorm)
-    yPred = yNorm .* (yMax-yMin) .+ yMin
+    yNorm = getPredFunc(model)(model.weights, xNorm)
+    yPred = yNorm .* (model.yMax-model.yMin) .+ model.yMin
 
     return yPred
 end
