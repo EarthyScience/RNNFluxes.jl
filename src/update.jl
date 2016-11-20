@@ -1,9 +1,3 @@
-"""
-    module Update
-
-Contains some extensions to the Knet module. Only needed until new Knet version is tagged.
-"""
-module Update
 import Base: *, A_mul_B!
 import Base: A_mul_Bt, A_mul_Bt!, A_mul_Bc, A_mul_Bc!
 import Base: At_mul_B, At_mul_B!, Ac_mul_B, Ac_mul_B!
@@ -144,7 +138,4 @@ function update!(w, g, prms::Rmsprop)
 	axpy!(1-prms.rho, g .* g, prms.G)
 	axpy!(-1 * prms.lr, g ./ sqrt(prms.G + prms.eps), w)
 	return w, prms
-end
-
-
 end

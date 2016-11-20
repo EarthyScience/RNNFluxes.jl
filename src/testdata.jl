@@ -1,6 +1,5 @@
-module TestData
 export loadSeasonal
-using DataFrames, DataArrays
+import DataFrames: readtable 
 
 function loadSeasonal(;nSample=typemax(Int))
   df = readtable(joinpath(dirname(@__FILE__),"..","data","MLTestSeasonal2.csv"), header=true)
@@ -14,5 +13,4 @@ function loadSeasonal(;nSample=typemax(Int))
   yOrig = reshape(yOrig, 100, 500, 1)
   y = yOrig[:, 1:min(nSample,500), :] ## For performance only choose fewer samples (sites)
   x,y
-end
 end

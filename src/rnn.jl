@@ -1,14 +1,40 @@
-module RNN
 import Plots: scatter!, plot
 import Reactive: Signal, value
 import Interact: checkbox
-import ..Update: Adam, update!
-import ..PlotProgress: plotSignal, plotSummary
 import StatsBase: sample
 using Knet
 export iniWeights, train_net, predict_after_train, loadSeasonal, RNNModel
 #import Interact: checkbox
 ### Predict function using the ragged Array directly (deprecated)
+
+"""
+    abstract FluxModel
+
+A supertype for all models to be defined within this package
+"""
+abstract FluxModel
+
+"""
+    type RNN
+
+Implementation of an RNN.
+"""
+type RNNModel <: FluxModel
+  weights::Vector{Float64}
+  nHid::Int
+  nVarX::Int
+  lossFunc::Function
+  trainTask::Task
+  lossesTrain::Vector{Float64}
+  lossesVali::Vector{Float64}
+  yMin::Float64
+  yMax::Float64
+  yNorm::Array{Float64,3}
+  xNorm::Array{Float64,3}
+  xEx::Vector{Tuple{Float64,Float64}}
+  interruptSignal::Signal{Bool}
+end
+
 function predict(w, x)
     nTimes, nSamp, nVar = size(x)
     #nSamp = size(x, 2)
@@ -35,7 +61,7 @@ end
 ### and extracting the relevant Matrices, this is faster (cf. Fabian tests and
 ### nd Adam does not easily work with the ragged vector)
 
-function RNNpredict(w, x) ### This implements w as a vector
+function predict(::RNNModel,w, x) ### This implements w as a vector
 
     nTimes, nSamp, nVar = size(x)
     nHid = Int(-0.5*(nVar + 2) + sqrt(0.25*(nVar+2)^2-1+length(w)))
@@ -117,37 +143,11 @@ function iniWeights(nVarX::Int=3, nHid::Int=12, NNtype="RNN")
 end
 
 ## Should move to stable code, when performance ok
-function mseLoss(w, x, y, predFunc)
-    return sumabs2(predFunc(w, x) .- y) / size(y,2)
+function mseLoss(w, x, y, model)
+    return sumabs2(predict(model,w, x) .- y) / size(y,2)
 end
 
-"""
-    abstract FluxModel
 
-A supertype for all models to be defined within this package
-"""
-abstract FluxModel
-
-"""
-    type RNN
-
-Implementation of an RNN.
-"""
-type RNNModel <: FluxModel
-  weights::Vector{Float64}
-  nHid::Int
-  nVarX::Int
-  lossFunc::Function
-  trainTask::Task
-  lossesTrain::Vector{Float64}
-  lossesVali::Vector{Float64}
-  yMin::Float64
-  yMax::Float64
-  yNorm::Array{Float64,3}
-  xNorm::Array{Float64,3}
-  xEx::Vector{Tuple{Float64,Float64}}
-  interruptSignal::Signal{Bool}
-end
 function RNNModel(nVar,nHid,w=iniWeights(nVar,nHid,"RNN"))
 
   totalNweights=nVar*nHid + nHid * nHid + 2*nHid + 1
@@ -155,8 +155,6 @@ function RNNModel(nVar,nHid,w=iniWeights(nVar,nHid,"RNN"))
   length(w) == totalNweights ||  error("Length of weights $(size(weights,1)) does not match needed length $totalNweights!")
   RNNModel(w,nHid,0,identity,Task(identity),Float64[],Float64[],NaN,NaN,zeros(0,0,0),zeros(0,0,0),Tuple{Float64,Float64}[],Signal(false))
 end
-
-getPredFunc(::RNNModel)=RNNpredict
 
 function train(model::RNNModel,x,y,nEpoch=201;kwargs...)
   model.trainTask=@schedule train_net(model,x,y,nEpoch;kwargs...)
@@ -173,8 +171,6 @@ function train_net(
     x, y, nEpoch=201;
     ## defines how a prediction is turned into a loss-Value (e.g. sum of squares, sum of abs, weighted squares etc..)
     lossFunc=mseLoss,
-    ## defines the predict function (RNN, LSTM, or could be any model!!)
-    predFunc=getPredFunc(model),
     ## How many samples are used in each epoch
     batchSize=1,
     ## Define search algorithm including parameters
@@ -192,7 +188,7 @@ function train_net(
 
     ## Define the used loss-Function based on the method to predict and the function defining how the predictions
     ## are compared with the data (default is Mean Squared Error across sequences)
-    loss(w, x, y)=lossFunc(w, x, y, predFunc)
+    loss(w, x, y)=lossFunc(w, x, y, model)
     lossgradient=grad(loss)
 
     ### Normalize y to 0,1
@@ -289,7 +285,7 @@ function train_net(
         if rem(i, infoStepSize) == 1
             println("Epoch $i, Training: ", lossesTrain[i], " Validation: ", lossesVali[i])
             ## For graphical real time monitoring (see cell above)
-            curPredAll=predFunc(w, xNorm)
+            curPredAll=predict(model,w, xNorm)
             #println(typeof(yNorm))
             if plotProgress
               newData=(lossesTrain, lossesVali,vec(curPredAll[:, trainIdx,:])[plotSample], vec(yNorm[:,trainIdx,:])[plotSample])
@@ -311,7 +307,7 @@ function predict_after_train(model::FluxModel, x)
     for v in 1:size(model.xEx,1);
        xNorm[:,:,v] = 2.0.* ((x[:,:,v]-model.xEx[v][1])/(model.xEx[v][2]-model.xEx[v][1])-0.5)
     end
-    yNorm = getPredFunc(model)(model.weights, xNorm)
+    yNorm = predict(model,model.weights, xNorm)
     yPred = yNorm .* (model.yMax-model.yMin) .+ model.yMin
 
     return yPred
@@ -378,6 +374,4 @@ function raggedToVector(raggedArray)
         totalLength+=elemLength
     end
     return ragged_as_Vector
-end
-
 end

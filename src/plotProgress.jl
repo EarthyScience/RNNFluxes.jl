@@ -1,11 +1,5 @@
-"""
-     module PlotProgress
-
-Contains some utility functions to monitor the progress of the training. Designed to work in
-conjunction with jupyter notebooks, might or mimght not work in other environments.
-"""
-module PlotProgress
 import Plots: plot, gr
+export plotSummary
 function plotSignal(y)
     gr()
     epIdx=1:length(y[1])
@@ -15,10 +9,8 @@ end
 function plotSummary(model)
       gr()
       yNorm=model.yNorm
-      pred=predFunc(w,xNorm)
+      pred=predict(model,model.weights,model.xNorm)
       display(plot([model.lossesTrain, model.lossesVali],color=["blue" "orange"],fmt=:png))
       display(plot(vec(pred), vec(yNorm), line=:scatter, color=:black, markeralpha=0.05,fmt=:png))
       println("Correlation: ", cor(vec(pred), vec(yNorm)))
-end
-
 end
