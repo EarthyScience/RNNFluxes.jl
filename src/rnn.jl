@@ -178,7 +178,9 @@ function train_net(
     ### How often will be intermediate output given
     infoStepSize=100,
     ### Also graphical output via the react/interact interface?
-    plotProgress=false
+    plotProgress=false,
+	### How many to plot in MOD vs OBS scatter plot
+	nPlotsample=2000
     )
 
     nTimes, nSamp, nVarX=size(x)
@@ -248,8 +250,11 @@ function train_net(
 
       cb=checkbox(label="Interrupt",signal=irsig)
       display(cb)
-      plotSample = sample(1:length(yNorm[:, trainIdx, :]), min(1000,length(yNorm[:, trainIdx, :])) , replace=false)
-      yvals=Signal((rand(200), rand(200), rand(1000).*10, rand(1000)./10))
+	  
+      plotSampleTrain = sample(1:length(yNorm[:, trainIdx, :]), min(nPlotsample,length(yNorm[:, trainIdx, :])) , replace=false)
+      plotSampleVali = sample(1:length(yNorm[:, valiIdx, :]), min(nPlotsample,length(yNorm[:, valiIdx, :])) , replace=false)
+
+      yvals=Signal((rand(200), rand(200), rand(1000).*10, rand(1000)./10,rand(1000).*10, 2+rand(1000)./10))
       display(map(plotSignal, yvals))
 
     end
@@ -288,7 +293,10 @@ function train_net(
             curPredAll=predict(model,w, xNorm)
             #println(typeof(yNorm))
             if plotProgress
-              newData=(lossesTrain, lossesVali,vec(curPredAll[:, trainIdx,:])[plotSample], vec(yNorm[:,trainIdx,:])[plotSample])
+              newData=(lossesTrain, lossesVali,
+					vec(curPredAll[:, trainIdx,:])[plotSampleTrain], vec(yNorm[:,trainIdx,:])[plotSampleTrain],
+					vec(curPredAll[:, valiIdx,:])[plotSampleVali], vec(yNorm[:,valiIdx,:])[plotSampleVali]
+					)
               plotProgress && push!(yvals, newData)
             end
         end

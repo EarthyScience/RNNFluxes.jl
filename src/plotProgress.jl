@@ -2,8 +2,17 @@ import Plots: plot, gr
 export plotSummary
 function plotSignal(y)
     gr()
-    epIdx=1:length(y[1])
-    plot([epIdx, y[3], epIdx, [0,1]],[y[1],y[4], y[2],[0,1]], line=[:line :scatter :line :line], color=["blue" "black" "orange" "red"],markeralpha=0.05, layout=2,fmt=:png)
+	len=length(y[1])
+	latestStart=len - minimum([trunc(Int,len*0.66) 1000])
+    epIdx=1:len
+
+    plot([epIdx, y[5], epIdx[latestStart:end],   epIdx, [0,1], epIdx[latestStart:end], epIdx,    y[3]],
+		  [y[1],y[6], y[1][latestStart:end],    y[2],  [0,1],  y[2][latestStart:end],  y[1],    y[4]], 
+		line=[:line :scatter :line              :line :line  :line                :line    :scatter], 
+		color=["blue" "orange" "blue"          "orange" "red" "orange"            "blue"   "blue"],
+		leg=[true false false],
+		markeralpha=0.15, label=["Training" "OBS vs. MOD" "Training" "Validation" "1:1-line" "Validation" "Training" "OBS vs. MOD"], 
+		layout=@layout([a b; c]),fmt=:png)
 end
 
 function plotSummary(model)
