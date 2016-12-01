@@ -75,7 +75,8 @@ function predict(::RNNModel,w, x) ### This implements w as a vector
 
 
     for s=1:nSamp  ## could this loop be parallelized into say 100 parallel instances? Even a speed up factor 10 would make quite some diff
-        hidden = zeros(eltype(w[1]),1, nHid)
+
+            hidden = zeros(eltype(w[1]),1, nHid)
 
             for i=1:nTimes
                 ## w[1] weights from input to hidden
@@ -84,12 +85,73 @@ function predict(::RNNModel,w, x) ### This implements w as a vector
                 ## w[4] bias to hidden
                 ## w[5] bias to output
                 hidden = sigm(x[i:i, s, :] * w1 + w4 + hidden * w2)
-               # ypred[i,s]=sigm(hidden * w3)[1] + w5[1]
-				ypred[i,s]=sigm(hidden * w3 + w5)[1]
-
+				        ypred[i,s] = sigm(hidden * w3 + w5)[1]
             end
     end
     return ypred
+end
+
+derivActivation(dh) = dot(sigm(dh),(1-sigm(dh))) # Maybe this should be matrix mult of dh * dh'
+derivloss(ytrue,ypred)=ytrue-ypred
+
+function predict_with_gradient(::RNNModel,w, x,ytrue) ### This implements w as a vector
+
+  nTimes, nSamp, nVar = size(x)
+  nHid = Int(-0.5*(nVar + 2) + sqrt(0.25*(nVar+2)^2-1+length(w)))
+
+  ypred=Array{typeof(w[1])}(nTimes, nSamp)
+  w1=reshape(w[1:nVar*nHid], nVar, nHid)
+  w2=reshape(w[nVar*nHid+1:nVar*nHid+nHid*nHid], nHid, nHid)
+  w3=reshape(w[nVar*nHid+nHid*nHid+1:nVar*nHid+nHid*nHid+nHid], nHid, 1)
+  w4=reshape(w[nVar*nHid+nHid*nHid+nHid+1:nVar*nHid+nHid*nHid+nHid+nHid], 1, nHid)
+  w5=reshape(w[nVar*nHid+nHid*nHid+nHid+nHid+1:nVar*nHid+nHid*nHid+nHid+nHid+1], 1)
+
+  dWxh, dWhh, dWhy = [zeros(size(w1)) for i=1:nSamp], [zeros(size(w2)) for i=1:nSamp], [zeros(size(w3)) for i=1:nSamp]
+  dbh, dby = [zeros(size(w4)) for i=1:nSamp], [zeros(size(w5)) for i=1:nSamp]
+  dhnext = 0
+
+  for s=1:nSamp  ## could this loop be parallelized into say 100 parallel instances? Even a speed up factor 10 would make quite some diff
+
+    hidden = zeros(eltype(w[1]),1, nHid,nTimes+1)
+    dhnext = 0
+
+    for i=1:nTimes
+      ## w[1] weights from input to hidden
+      ## w[2] weights hidden to hidden
+      ## w[3] weights hidden to output
+      ## w[4] bias to hidden
+      ## w[5] bias to output
+      hidden[:,:,i] = sigm(x[i:i, s, :] * w1 + w4 + hidden[:,:,max(i,1)] * w2)
+      # ypred[i,s]=sigm(hidden * w3)[1] + w5[1]
+      ypred[i,s]=sigm(hidden[:,:,i] * w3 + w5)[1]
+
+    end
+
+
+    for i=nTimes:-1:1
+      ## w[1] weights from input to hidden
+      ## w[2] weights hidden to hidden
+      ## w[3] weights hidden to output
+      ## w[4] bias to hidden
+      ## w[5] bias to output
+      dy=derivloss(ytrue[i,s],ypred[i,s])
+      dWhy[s]+=dy*hidden[:,:,i]'
+      dby[s]+=dy
+      dh = w3 * dy + dhnext
+      dhraw = derivActivation(hidden[:,:,i])*dh
+      dbh[s]  += dhraw'
+      dWxh[s] += (dhraw * x[i:i,s,:])'
+      dWhh[s] += dhraw * (i==1 ? zeros(1,nHid) : hidden[:,:,i-1])
+      dhnext = w2' * dhraw
+      # ypred[i,s]=sigm(hidden * w3)[1] + w5[1
+      if s==1
+        println(i)
+        println(dWxh[s])
+      end
+    end
+  end
+
+  return ypred, dWxh, dWhh, dWhy, dbh, dby
 end
 
 
@@ -271,7 +333,6 @@ function train_net(
         ### Calc the loss gradient dloss/dw based on the current weight vector and the sample
         ### This is done here with the predef Adagrad method. Could be done explicitely to speed up
         dw = lossgradient(w, xNorm[:,trainIdx[batchIdx] ,:], yNorm[:, trainIdx[batchIdx],:])
-
         ### Update w according to loss gradient and algorithm (incl, parameters therein)
         w, params = update!(w, dw, searchParams)
 
