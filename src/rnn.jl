@@ -24,7 +24,7 @@ type RNNModel <: FluxModel
   nHid::Int
   nVarX::Int
   lossFunc::Function
-  trainTask::Task
+  outputtimesteps::Vector{Int}
   lossesTrain::Vector{Float64}
   lossesVali::Vector{Float64}
   yMin::Float64
@@ -32,7 +32,6 @@ type RNNModel <: FluxModel
   yNorm::Array{Float64,3}
   xNorm::Array{Float64,3}
   xEx::Vector{Tuple{Float64,Float64}}
-  interruptSignal::Signal{Bool}
 end
 
 ### (The same) predict function using a linear Vector of w (needed for update!)
@@ -256,12 +255,7 @@ function RNNModel(nVar,nHid,w=iniWeights(nVar,nHid,"RNN"))
   totalNweights=nVar*nHid + nHid * nHid + 2*nHid + 1
 
   length(w) == totalNweights ||  error("Length of weights $(size(weights,1)) does not match needed length $totalNweights!")
-  RNNModel(w,nHid,0,identity,Task(identity),Float64[],Float64[],NaN,NaN,zeros(0,0,0),zeros(0,0,0),Tuple{Float64,Float64}[],Signal(false))
-end
-
-function train(model::RNNModel,x,y,nEpoch=201;kwargs...)
-  model.trainTask=@schedule train_net(model,x,y,nEpoch;kwargs...)
-  sleep(1)
+  RNNModel(w,nHid,0,identity,Int[],Float64[],Float64[],NaN,NaN,zeros(0,0,0),zeros(0,0,0),Tuple{Float64,Float64}[])
 end
 
 #Training:
@@ -292,6 +286,7 @@ function train_net(
 
     lossesTrain = model.lossesTrain
     lossesVali = model.lossesVali
+    outputtimesteps = model.outputtimesteps
 
     ## Define the used loss-Function based on the method to predict and the function defining how the predictions
     ## are compared with the data (default is Mean Squared Error across sequences)
@@ -341,13 +336,15 @@ function train_net(
     info("BatchSize: " , batchSize)
 
     ### Loss before training
-    lossesPreTrain=loss(w, xNorm[:, trainIdx,:], yNorm[:, trainIdx, :])
-    lossesPreVali=loss(w, xNorm[:, valiIdx,:], yNorm[:, valiIdx, :])
-    info("Before training loss, Training set: ", lossesPreTrain, " Validation: ", lossesPreVali)
+    push!(lossesTrain,loss(w, xNorm[:, trainIdx,:], yNorm[:, trainIdx, :]))
+    push!(lossesVali,loss(w, xNorm[:, valiIdx,:], yNorm[:, valiIdx, :]))
+    push!(outputtimesteps,isempty(outputtimesteps) ? 1 : outputtimesteps[end]+1)
+    curPredAll=predict(model,w, xNorm)
+    info("Before training loss, Training set: ", lossesTrain[end], " Validation: ", lossesVali[end])
 
-    irsig=model.interruptSignal
+    irsig=Signal(false)
 
-    ### Just for plotting performace select not too many points (otherwise my notebook freezes etc)
+    ### Just for plotting performace selec not too many points (otherwise my notebook freezes etc)
     if plotProgress
 
       cb=checkbox(label="Interrupt",signal=irsig)
@@ -356,17 +353,10 @@ function train_net(
       plotSampleTrain = sample(1:length(yNorm[:, trainIdx, :]), min(nPlotsample,length(yNorm[:, trainIdx, :])) , replace=false)
       plotSampleVali = sample(1:length(yNorm[:, valiIdx, :]), min(nPlotsample,length(yNorm[:, valiIdx, :])) , replace=false)
 
-      yvals=Signal((rand(200), rand(200), rand(1000).*10, rand(1000)./10,rand(1000).*10, 2+rand(1000)./10))
-      display(map(plotSignal, yvals))
-
+      p=plotSignal(outputtimesteps,lossesTrain, lossesVali,vec(curPredAll[:, trainIdx,:]), vec(yNorm[:,trainIdx,:]),vec(curPredAll[:, valiIdx,:]), vec(yNorm[:,valiIdx,:]))
+      plot(p)
     end
 
-
-    ### Here would be could if one could stop the loop based on user input to a checkbox (does not work)
-    ### (Fabian knows what mean)
-   # b=checkbox()
-   # display(b)
-   # quitLoop=Signal(b.value)
 
     for i=1:nEpoch
 
@@ -386,6 +376,7 @@ function train_net(
         ### Early stopping based on the validation set could be implemented (when validation loss gets worse again)
         ### but it will be heuristic, because one has to smooth the loss series (with batch there is noise)
         if rem(i,losscalcsize) == 1
+          push!(outputtimesteps,outputtimesteps[end]+losscalcsize)
           push!(lossesTrain,loss(w, xNorm[:, trainIdx,:], yNorm[:, trainIdx, :]))
           push!(lossesVali,loss(w, xNorm[:, valiIdx,:], yNorm[:, valiIdx, :]))
         end
@@ -396,11 +387,17 @@ function train_net(
             ## For graphical real time monitoring (see cell above)
             #println(typeof(yNorm))
             if plotProgress
-              newData=(lossesTrain, lossesVali,
-					vec(curPredAll[:, trainIdx,:])[plotSampleTrain], vec(yNorm[:,trainIdx,:])[plotSampleTrain],
-					vec(curPredAll[:, valiIdx,:])[plotSampleVali], vec(yNorm[:,valiIdx,:])[plotSampleVali]
-					)
-              plotProgress && push!(yvals, newData)
+              latestStart=outputtimesteps[end] - minimum([trunc(Int,outputtimesteps[end]*0.66) 1000])
+              subTS=findfirst(i->i>=latestStart,outputtimesteps):length(outputtimesteps)
+              curPredAll=predict(model,w, xNorm)
+              p[1]=(outputtimesteps,lossesTrain)
+              p[2]=(vec(curPredAll[:,valiIdx,:])[plotSampleVali],vec(yNorm[:,valiIdx,:])[plotSampleVali])
+              p[3]=(outputtimesteps[subTS],lossesTrain[subTS])
+              p[4]=(outputtimesteps,lossesVali)
+              p[6]=(outputtimesteps[subTS],lossesVali[subTS])
+              p[7]=(outputtimesteps,lossesTrain)
+              p[8]=(vec(curPredAll[:,trainIdx,:])[plotSampleTrain],vec(yNorm[:,trainIdx,:])[plotSampleTrain])
+              plot(p)
             end
         end
     end
@@ -445,7 +442,7 @@ function LSTMpredict(w, x)
    # wWg = w[8] # from hidden to candiate hidden update
    # Wout =  w[9] # from hidden to predictions
     biasInp = w[10] ### bias from input (1, nHid)
-   biasOut =w[11] ### bias to output (1) (one output only)
+    biasOut =w[11] ### bias to output (1) (one output only)
 
 
     for s=1:nSamp
@@ -485,141 +482,4 @@ function raggedToVector(raggedArray)
         totalLength+=elemLength
     end
     return ragged_as_Vector
-end
-
-
-#Training:
-## Input x[nTimes, nSamples, nVar]
-##       y[nTimes, nSamples]
-##       nEpochs
-function train_net_gradient(
-    model::FluxModel,
-    # Predictors, target and number of Epochs (y is still 1 variable only, can be changed to multioutput, but for us I don't see an urgent application)
-    x, y, nEpoch=201;
-    ## defines how a prediction is turned into a loss-Value (e.g. sum of squares, sum of abs, weighted squares etc..)
-    lossFunc=mseLoss,
-    ## How many samples are used in each epoch
-    batchSize=1,
-    ## Define search algorithm including parameters
-    searchParams = Adam(model.weights; lr=0.01, beta1=0.9, beta2=0.95, t=1, eps=1e-6, fstm=zeros(model.weights), scndm=zeros(model.weights)),
-    ### How often will be intermediate output given
-    infoStepSize=100,
-    ### Also graphical output via the react/interact interface?
-    plotProgress=false
-    )
-
-    nTimes, nSamp, nVarX=size(x)
-
-    lossesTrain = model.lossesTrain
-    lossesVali = model.lossesVali
-
-    ## Define the used loss-Function based on the method to predict and the function defining how the predictions
-    ## are compared with the data (default is Mean Squared Error across sequences)
-    loss(w, x, y)=lossFunc(w, x, y, model)
-    lossgradient=grad(loss)
-
-    ### Normalize y to 0,1
-    yMin, yMax = extrema(y)
-    yNorm=(y-yMin)/(yMax-yMin)
-    ### Normalize x to -1, 1 per Variable (not necessarily the best way to do it....)
-    xEx=vec(extrema(x, [1,2]))
-    xNorm=copy(x)
-    for v in 1:size(xEx,1);
-        xNorm[:,:,v] = 2.0.* ((x[:,:,v]-xEx[v][1])/(xEx[v][2]-xEx[v][1])-0.5)
-    end
-    model.yNorm, model.xNorm = yNorm, xNorm
-    model.yMin, model.yMax, model.xEx = yMin, yMax, xEx
-
-    ## Split data set for cross-validation
-    ## Could be parameterized in the function call later!!
-    ## Also missing a full k-fold crossvalidation
-    valiFrac=0.2
-    permut=shuffle(1:nSamp)
-
-    valiNSamp = trunc(Int, valiFrac*nSamp)
-
-    if valiNSamp >= 2
-        valiIdx=permut[1:valiNSamp]
-        trainIdx=permut[valiNSamp+1:end]
-    else
-        valiIdx=1:nSamp
-        trainIdx=1:nSamp
-        warn("Too few samples (only $valiNSamp) for creating validation set!! Full data set (n=$nSamp sequences) used for training...")
-    end
-    if length(trainIdx) < batchSize
-        warn("Too few samples for batchSize $(batchSize)! BatchSize adjusted to full training size $(length(trainIdx))")
-        batchSize=length(trainIdx)
-
-    end
-
-
-    #valiIdx=1:nSamp; trainIdx=1:nSamp
-    #display(plot(layer(x = vec(xNorm)[1:1000], y = vec(x)[1:1000], Geom.point)))
-
-
-    w = model.weights
-
-    info("Starting training....")
-    info( length(trainIdx), " Training samples, ",  length(valiIdx), " Validation samples. " )
-    info("BatchSize: " , batchSize)
-
-    ### Loss before training
-    lossesPreTrain=loss(w, xNorm[:, trainIdx,:], yNorm[:, trainIdx, :])
-    lossesPreVali=loss(w, xNorm[:, valiIdx,:], yNorm[:, valiIdx, :])
-    info("Before training loss, Training set: ", lossesPreTrain, " Validation: ", lossesPreVali)
-
-    irsig=model.interruptSignal
-
-    ### Just for plotting performace select not too many points (otherwise my notebook freezes etc)
-    if plotProgress
-
-      cb=checkbox(label="Interrupt",signal=irsig)
-      display(cb)
-      plotSample = sample(1:length(yNorm[:, trainIdx, :]), min(1000,length(yNorm[:, trainIdx, :])) , replace=false)
-      yvals=Signal((rand(200), rand(200), rand(1000).*10, rand(1000)./10))
-      display(map(plotSignal, yvals))
-
-    end
-
-
-    ### Here would be could if one could stop the loop based on user input to a checkbox (does not work)
-    ### (Fabian knows what mean)
-   # b=checkbox()
-   # display(b)
-   # quitLoop=Signal(b.value)
-
-    for i=1:nEpoch
-
-        value(irsig) && break
-        ### Batch approach: cylce randomly through subset of samples (==> more stochasticitym better performance (in theory))
-        ### I don't understand why the performance does not get much better with smaller batches
-        nTrSamp = length(trainIdx)
-        batchIdx=sample(1:nTrSamp,batchSize, replace=false)
-        ### Calc the loss gradient dloss/dw based on the current weight vector and the sample
-        ### This is done here with the predef Adagrad method. Could be done explicitely to speed up
-        #dw = lossgradient(w, xNorm[:,trainIdx[batchIdx] ,:], yNorm[:, trainIdx[batchIdx],:])
-		dw = predict_with_gradient_new(model, w, xNorm[:,trainIdx[batchIdx] ,:], yNorm[:, trainIdx[batchIdx],:])
-		#println(size(dw))
-        ### Update w according to loss gradient and algorithm (incl, parameters therein)
-        w, params = update!(w, dw, searchParams)
-
-        ### Loss on training set and on validation set
-        ### Early stopping based on the validation set could be implemented (when validation loss gets worse again)
-        ### but it will be heuristic, because one has to smooth the loss series (with batch there is noise)
-        push!(lossesTrain,loss(w, xNorm[:, trainIdx,:], yNorm[:, trainIdx, :]))
-        push!(lossesVali,loss(w, xNorm[:, valiIdx,:], yNorm[:, valiIdx, :]))
-
-        ### Output
-        if rem(i, infoStepSize) == 1
-            println("Epoch $i, Training: ", lossesTrain[i], " Validation: ", lossesVali[i])
-            ## For graphical real time monitoring (see cell above)
-            curPredAll=predict(model,w, xNorm)
-            #println(typeof(yNorm))
-            if plotProgress
-              newData=(lossesTrain, lossesVali,vec(curPredAll[:, trainIdx,:])[plotSample], vec(yNorm[:,trainIdx,:])[plotSample])
-              plotProgress && push!(yvals, newData)
-            end
-        end
-    end
-    return model
 end
