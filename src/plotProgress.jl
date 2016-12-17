@@ -1,17 +1,16 @@
-import Plots: plot, gr
+import Plots: plot, gr, default
 export plotSummary
-function plotSignal(y)
-    gr()
-	len=length(y[1])
-	latestStart=len - minimum([trunc(Int,len*0.66) 1000])
-    epIdx=1:len
+default(show=:inline)
+function plotSignal(outputsteps,lossesTrain, lossesVali, predTrain, yTrain,predVali,yVali)
+  gr()
+  epIdx=outputsteps
 
-    plot([epIdx, y[5], epIdx[latestStart:end],   epIdx, [0,1], epIdx[latestStart:end], epIdx,    y[3]],
-		  [y[1],y[6], y[1][latestStart:end],    y[2],  [0,1],  y[2][latestStart:end],  y[1],    y[4]], 
-		line=[:line :scatter :line              :line :line  :line                :line    :scatter], 
+  plot([epIdx, predVali, epIdx,   epIdx, [0,1], epIdx, epIdx,    predTrain],
+		  [lossesTrain,yVali, lossesTrain,    lossesVali,  [0,1],  lossesVali,  lossesTrain,    yTrain],
+		line=[:line :scatter :line              :line :line  :line                :line    :scatter],
 		color=["blue" "orange" "blue"          "orange" "red" "orange"            "blue"   "blue"],
 		leg=[true false false],
-		markeralpha=0.15, label=["Training" "OBS vs. MOD" "Training" "Validation" "1:1-line" "Validation" "Training" "OBS vs. MOD"], 
+		markeralpha=0.15, label=["Training" "OBS vs. MOD" "Training" "Validation" "1:1-line" "Validation" "Training" "OBS vs. MOD"],
 		layout=@layout([a b; c]),fmt=:png)
 end
 
@@ -35,7 +34,7 @@ function plotSummary(model)
       #Scatterplot MOD vs OBS
 	  min=minimum(vec(yNorm))
 	  max=maximum(vec(yNorm))
-	  
+
       display(plot([vec(pred), [min, max]], [vec(yNorm), [min, max]], line=[:scatter :line], color=[:black :red], markeralpha=0.05, label=["OBS vs. MOD", "1:1-line"], fmt=:png))
       println("Correlation: ", cor(vec(pred), vec(yNorm)))
 end

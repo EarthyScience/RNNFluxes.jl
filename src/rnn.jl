@@ -24,7 +24,7 @@ type RNNModel <: FluxModel
   nHid::Int
   nVarX::Int
   lossFunc::Function
-  trainTask::Task
+  outputtimesteps::Vector{Int}
   lossesTrain::Vector{Float64}
   lossesVali::Vector{Float64}
   yMin::Float64
@@ -32,29 +32,6 @@ type RNNModel <: FluxModel
   yNorm::Array{Float64,3}
   xNorm::Array{Float64,3}
   xEx::Vector{Tuple{Float64,Float64}}
-  interruptSignal::Signal{Bool}
-end
-
-function predict(w, x)
-    nTimes, nSamp, nVar = size(x)
-    #nSamp = size(x, 2)
-    ypred=Array{typeof(w[1][1])}(nTimes, nSamp) ## Currently only one y - Variable can eb predicted
-
-    for s=1:nSamp
-        hidden = zeros(eltype(w[1]),1, size(w[2],1)) ## w[2] connects the hidden nodes
-        for i=1:nTimes
-            ## w[1] weights from input to hidden (must have dim  nVar, nHid)
-            ## w[2] weights hidden to hidden (must have dim  nHid, nHid)
-            ## w[3] weights hidden to output
-            ## w[4] bias to hidden
-            ## w[5] bias to output
-
-             hidden = sigm(x[i:i, s, :] * w[1] + w[4] + hidden * w[2])
-            ypred[i,s]=sigm(hidden * w[3])[1] + w[5][1]
-
-        end
-    end
-    return ypred
 end
 
 ### (The same) predict function using a linear Vector of w (needed for update!)
@@ -63,33 +40,158 @@ end
 
 function predict(::RNNModel,w, x) ### This implements w as a vector
 
-    nTimes, nSamp, nVar = size(x)
-    nHid = Int(-0.5*(nVar + 2) + sqrt(0.25*(nVar+2)^2-1+length(w)))
+  # Reshape weight vectors and create temp arrays
+  nTimes,nSamp,nVar,nHid,ypred,w1,w2,w3,w4,w5,hidden_pre,xw1,hidprew2,xcur,hidden = RNN_init_pred(w,x)
 
-    ypred=Array{typeof(w[1])}(nTimes, nSamp)
-    w1=reshape(w[1:nVar*nHid], nVar, nHid)
-    w2=reshape(w[nVar*nHid+1:nVar*nHid+nHid*nHid], nHid, nHid)
-    w3=reshape(w[nVar*nHid+nHid*nHid+1:nVar*nHid+nHid*nHid+nHid], nHid, 1)
-    w4=reshape(w[nVar*nHid+nHid*nHid+nHid+1:nVar*nHid+nHid*nHid+nHid+nHid], 1, nHid)
-    w5=reshape(w[nVar*nHid+nHid*nHid+nHid+nHid+1:nVar*nHid+nHid*nHid+nHid+nHid+1], 1)
+  for s=1:nSamp  ## could this loop be parallelized into say 100 parallel instances? Even a speed up factor 10 would make quite some diff
+    # Run the prediction
+    RNN_predict_loop(s,nTimes,nVar,nHid,hidden,hidden_pre,hidprew2,ypred,xcur,x,xw1,w1,w2,w3,w4,w5)
+  end
 
+  return ypred
+end
 
-    for s=1:nSamp  ## could this loop be parallelized into say 100 parallel instances? Even a speed up factor 10 would make quite some diff
-        hidden = zeros(eltype(w[1]),1, nHid)
+function RNN_init_pred(w,x)
 
-            for i=1:nTimes
-                ## w[1] weights from input to hidden
-                ## w[2] weights hidden to hidden
-                ## w[3] weights hidden to output
-                ## w[4] bias to hidden
-                ## w[5] bias to output
-                hidden = sigm(x[i:i, s, :] * w1 + w4 + hidden * w2)
-               # ypred[i,s]=sigm(hidden * w3)[1] + w5[1]
-				ypred[i,s]=sigm(hidden * w3 + w5)[1]
+  nTimes, nSamp, nVar = size(x)
+  nHid = Int(-0.5*(nVar + 2) + sqrt(0.25*(nVar+2)^2-1+length(w)))
 
-            end
+  ypred=Array{typeof(w[1])}(nTimes, nSamp)
+  w1=reshape(w[1:nVar*nHid], nVar, nHid)
+  w2=reshape(w[nVar*nHid+1:nVar*nHid+nHid*nHid], nHid, nHid)
+  w3=reshape(w[nVar*nHid+nHid*nHid+1:nVar*nHid+nHid*nHid+nHid], nHid, 1)
+  w4=reshape(w[nVar*nHid+nHid*nHid+nHid+1:nVar*nHid+nHid*nHid+nHid+nHid], 1, nHid)
+  w5=reshape(w[nVar*nHid+nHid*nHid+nHid+nHid+1:nVar*nHid+nHid*nHid+nHid+nHid+1], 1)
+
+  # Allocate temprary arrays
+  hidden_pre = zeros(1,nHid)
+  xw1        = zeros(1,nHid)
+  hidprew2   = zeros(1,nHid)
+  xcur       = zeros(1,nVar)
+  hidden     = zeros(1, nHid,nTimes+1)
+
+  return nTimes,nSamp,nVar,nHid,ypred,w1,w2,w3,w4,w5,hidden_pre,xw1,hidprew2,xcur,hidden
+end
+
+function RNN_predict_loop(s,nTimes,nVar,nHid,hidden,hidden_pre,hidprew2,ypred,xcur,x,xw1,w1,w2,w3,w4,w5)
+
+    #Emtpy temporary arrays
+    fill!(hidden,zero(eltype(hidden)))
+    fill!(hidden_pre,zero(eltype(hidden_pre)))
+
+    for i=1:nTimes
+      ## w[1] weights from input to hidden
+      ## w[2] weights hidden to hidden
+      ## w[3] weights hidden to output
+      ## w[4] bias to hidden
+      ## w[5] bias to output
+
+      # First copy current x variables to xcur
+      for j=1:nVar xcur[j]=x[i,s,j] end
+
+      #Then calculate x * w1 and hidden[:,:,i-1]*w2
+      A_mul_B!(xw1,xcur,w1)
+      A_mul_B!(hidprew2,hidden_pre,w2)
+
+      #Add both together and apply activation function
+      @inbounds for j=1:nHid
+        hidden[1,j,i]=sigm(xw1[j]+hidprew2[j])
+      end
+
+      #Store hidden state in hidden_pre matrix
+      copy!(hidden_pre,1,hidden,nHid*(i-1)+1,nHid)
+
+      #Calculate prediction through hidden*w3+w5
+      ypred[i,s] = sigm(dot(hidden_pre,w3) + w5[1])
     end
-    return ypred
+
+end
+
+derivActivation(y,dy) = y.*(1-y).*dy # Maybe this should be matrix mult of dh * dh'
+derivActivation!(dest,hidden,dh) = for j=1:length(hidden) dest[j]=hidden[j]*(1-hidden[j])*dh[j] end
+derivloss(ytrue,ypred)=ytrue-ypred
+
+function Knet.sigm(xi::Number)
+  if xi>=0
+    z=exp(-xi)
+    return one(xi)/(one(xi)+z)
+  else
+    z=exp(xi)
+    return z/(one(xi)+z)
+  end
+end
+
+
+function predict_with_gradient(::RNNModel,w, x,ytrue) ### This implements w as a vector
+
+  # Reshape weight vectors and create temp arrays
+  nTimes,nSamp,nVar,nHid,ypred,w1,w2,w3,w4,w5,hidden_pre,xw1,hidprew2,xcur,hidden = RNN_init_pred(w,x)
+
+  # Allocate additional arrays for derivative calculation
+  dWxh, dWhh, dWhy = [zeros(size(w1)) for i=1:nSamp], [zeros(size(w2)) for i=1:nSamp], [zeros(size(w3)) for i=1:nSamp]
+  dbh, dby         = [zeros(size(w4)) for i=1:nSamp], [zeros(size(w5)) for i=1:nSamp]
+  dhnext           = zeros(Float64,1,nHid)
+  dh               = zeros(nHid,1)
+  dhraw            = zeros(nHid,1)
+
+  for s=1:nSamp  ## could this loop be parallelized into say 100 parallel instances? Even a speed up factor 10 would make quite some diff
+
+    # Run the prediction
+    RNN_predict_loop(s,nTimes,nVar,nHid,hidden,hidden_pre,hidprew2,ypred,xcur,x,xw1,w1,w2,w3,w4,w5)
+
+    # Run the derivative backward pass
+    for i=nTimes:-1:1
+
+      # Derivative of the loss function
+      dy = derivloss(ytrue[i,s],ypred[i,s])
+
+      # Derivative of the activations function (still a scalar)
+      dy2 = derivActivation(ypred[i,s],dy)
+
+      #Copy current hidden state to temp array
+      copy!(hidden_pre,1,hidden,nHid*(i-1)+1,nHid)
+
+      # Get dWhy and dh in a single loop
+      dWhycur=dWhy[s]
+      @inbounds for j=1:nHid
+        dWhycur[j]+=hidden_pre[j]*dy2
+        dh[j]=w3[j]*dy2 + dhnext[j]
+      end
+
+      # Derivative of output-bias is trivial
+      dby[s][1] += dy2
+
+      # Now apply derivative of activation function to the hidden state
+      # Be careful - derivative must be expressed as f'(f(x))
+      derivActivation!(dhraw,hidden_pre,dh)
+
+      # Get hidden-bias derivatives
+      dbhcur=dbh[s]
+      @inbounds for j=1:nHid dbhcur[j]  += dhraw[j] end
+
+      # Copy current x state to temp array
+      @inbounds for j=1:nVar xcur[j]=x[i,s,j] end
+
+      # Get input-to-hidden derivatives
+      gemm!('T','T',1.0,xcur,dhraw,1.0,dWxh[s])
+
+      # Fill the hidden-pre array with the previous time step or zeros if we are at time step 1
+      if i==1
+        fill!(hidden_pre,0.0)
+      else
+        copy!(hidden_pre,1,hidden,nHid*(i-2)+1,nHid)
+      end
+
+      # Now get the hidden-to-hidden derivatives (dWhh[s]=hidden_pre' * dhraw')
+      gemm!('T','T',1.0,hidden_pre,dhraw,1.0,dWhh[s])
+
+      # And finakky save dh for the next (previous time step)
+      At_mul_B!(dhnext,dhraw,w2)
+    end
+
+  end
+
+  return -[reshape(sum(dWxh), nVar*nHid ); reshape(sum(dWhh), nHid*nHid) ; reshape(sum(dWhy),nHid) ; reshape(sum(dbh),nHid) ; reshape(sum(dby),1)]
 end
 
 
@@ -153,12 +255,7 @@ function RNNModel(nVar,nHid,w=iniWeights(nVar,nHid,"RNN"))
   totalNweights=nVar*nHid + nHid * nHid + 2*nHid + 1
 
   length(w) == totalNweights ||  error("Length of weights $(size(weights,1)) does not match needed length $totalNweights!")
-  RNNModel(w,nHid,0,identity,Task(identity),Float64[],Float64[],NaN,NaN,zeros(0,0,0),zeros(0,0,0),Tuple{Float64,Float64}[],Signal(false))
-end
-
-function train(model::RNNModel,x,y,nEpoch=201;kwargs...)
-  model.trainTask=@schedule train_net(model,x,y,nEpoch;kwargs...)
-  sleep(1)
+  RNNModel(w,nHid,0,identity,Int[],Float64[],Float64[],NaN,NaN,zeros(0,0,0),zeros(0,0,0),Tuple{Float64,Float64}[])
 end
 
 #Training:
@@ -177,6 +274,8 @@ function train_net(
     searchParams = Adam(model.weights; lr=0.01, beta1=0.9, beta2=0.95, t=1, eps=1e-6, fstm=zeros(model.weights), scndm=zeros(model.weights)),
     ### How often will be intermediate output given
     infoStepSize=100,
+    ### How often will the losses of the whole dataset be evaluated
+    losscalcsize=20,
     ### Also graphical output via the react/interact interface?
     plotProgress=false,
 	### How many to plot in MOD vs OBS scatter plot
@@ -187,11 +286,11 @@ function train_net(
 
     lossesTrain = model.lossesTrain
     lossesVali = model.lossesVali
+    outputtimesteps = model.outputtimesteps
 
     ## Define the used loss-Function based on the method to predict and the function defining how the predictions
     ## are compared with the data (default is Mean Squared Error across sequences)
     loss(w, x, y)=lossFunc(w, x, y, model)
-    lossgradient=grad(loss)
 
     ### Normalize y to 0,1
     yMin, yMax = extrema(y)
@@ -227,10 +326,8 @@ function train_net(
 
     end
 
-
     #valiIdx=1:nSamp; trainIdx=1:nSamp
     #display(plot(layer(x = vec(xNorm)[1:1000], y = vec(x)[1:1000], Geom.point)))
-
 
     w = model.weights
 
@@ -239,32 +336,27 @@ function train_net(
     info("BatchSize: " , batchSize)
 
     ### Loss before training
-    lossesPreTrain=loss(w, xNorm[:, trainIdx,:], yNorm[:, trainIdx, :])
-    lossesPreVali=loss(w, xNorm[:, valiIdx,:], yNorm[:, valiIdx, :])
-    info("Before training loss, Training set: ", lossesPreTrain, " Validation: ", lossesPreVali)
+    push!(lossesTrain,loss(w, xNorm[:, trainIdx,:], yNorm[:, trainIdx, :]))
+    push!(lossesVali,loss(w, xNorm[:, valiIdx,:], yNorm[:, valiIdx, :]))
+    push!(outputtimesteps,isempty(outputtimesteps) ? 1 : outputtimesteps[end]+1)
+    curPredAll=predict(model,w, xNorm)
+    info("Before training loss, Training set: ", lossesTrain[end], " Validation: ", lossesVali[end])
 
-    irsig=model.interruptSignal
+    irsig=Signal(false)
 
-    ### Just for plotting performace select not too many points (otherwise my notebook freezes etc)
+    ### Just for plotting performace selec not too many points (otherwise my notebook freezes etc)
     if plotProgress
 
       cb=checkbox(label="Interrupt",signal=irsig)
       display(cb)
-	  
+
       plotSampleTrain = sample(1:length(yNorm[:, trainIdx, :]), min(nPlotsample,length(yNorm[:, trainIdx, :])) , replace=false)
       plotSampleVali = sample(1:length(yNorm[:, valiIdx, :]), min(nPlotsample,length(yNorm[:, valiIdx, :])) , replace=false)
 
-      yvals=Signal((rand(200), rand(200), rand(1000).*10, rand(1000)./10,rand(1000).*10, 2+rand(1000)./10))
-      display(map(plotSignal, yvals))
-
+      p=plotSignal(outputtimesteps,lossesTrain, lossesVali,vec(curPredAll[:, trainIdx,:]), vec(yNorm[:,trainIdx,:]),vec(curPredAll[:, valiIdx,:]), vec(yNorm[:,valiIdx,:]))
+      plot(p)
     end
 
-
-    ### Here would be could if one could stop the loop based on user input to a checkbox (does not work)
-    ### (Fabian knows what mean)
-   # b=checkbox()
-   # display(b)
-   # quitLoop=Signal(b.value)
 
     for i=1:nEpoch
 
@@ -275,29 +367,37 @@ function train_net(
         batchIdx=sample(1:nTrSamp,batchSize, replace=false)
         ### Calc the loss gradient dloss/dw based on the current weight vector and the sample
         ### This is done here with the predef Adagrad method. Could be done explicitely to speed up
-        dw = lossgradient(w, xNorm[:,trainIdx[batchIdx] ,:], yNorm[:, trainIdx[batchIdx],:])
-
+        #dw = lossgradient(w, xNorm[:,trainIdx[batchIdx] ,:], yNorm[:, trainIdx[batchIdx],:])
+        dw = predict_with_gradient(model,model.weights,xNorm[:,trainIdx[batchIdx] ,:], yNorm[:, trainIdx[batchIdx],:])
         ### Update w according to loss gradient and algorithm (incl, parameters therein)
         w, params = update!(w, dw, searchParams)
 
         ### Loss on training set and on validation set
         ### Early stopping based on the validation set could be implemented (when validation loss gets worse again)
         ### but it will be heuristic, because one has to smooth the loss series (with batch there is noise)
-        push!(lossesTrain,loss(w, xNorm[:, trainIdx,:], yNorm[:, trainIdx, :]))
-        push!(lossesVali,loss(w, xNorm[:, valiIdx,:], yNorm[:, valiIdx, :]))
+        if rem(i,losscalcsize) == 1
+          push!(outputtimesteps,outputtimesteps[end]+losscalcsize)
+          push!(lossesTrain,loss(w, xNorm[:, trainIdx,:], yNorm[:, trainIdx, :]))
+          push!(lossesVali,loss(w, xNorm[:, valiIdx,:], yNorm[:, valiIdx, :]))
+        end
 
         ### Output
         if rem(i, infoStepSize) == 1
-            println("Epoch $i, Training: ", lossesTrain[i], " Validation: ", lossesVali[i])
+            println("Epoch $i, Training: ", lossesTrain[end], " Validation: ", lossesVali[end])
             ## For graphical real time monitoring (see cell above)
-            curPredAll=predict(model,w, xNorm)
             #println(typeof(yNorm))
             if plotProgress
-              newData=(lossesTrain, lossesVali,
-					vec(curPredAll[:, trainIdx,:])[plotSampleTrain], vec(yNorm[:,trainIdx,:])[plotSampleTrain],
-					vec(curPredAll[:, valiIdx,:])[plotSampleVali], vec(yNorm[:,valiIdx,:])[plotSampleVali]
-					)
-              plotProgress && push!(yvals, newData)
+              latestStart=outputtimesteps[end] - minimum([trunc(Int,outputtimesteps[end]*0.66) 1000])
+              subTS=findfirst(i->i>=latestStart,outputtimesteps):length(outputtimesteps)
+              curPredAll=predict(model,w, xNorm)
+              p[1]=(outputtimesteps,lossesTrain)
+              p[2]=(vec(curPredAll[:,valiIdx,:])[plotSampleVali],vec(yNorm[:,valiIdx,:])[plotSampleVali])
+              p[3]=(outputtimesteps[subTS],lossesTrain[subTS])
+              p[4]=(outputtimesteps,lossesVali)
+              p[6]=(outputtimesteps[subTS],lossesVali[subTS])
+              p[7]=(outputtimesteps,lossesTrain)
+              p[8]=(vec(curPredAll[:,trainIdx,:])[plotSampleTrain],vec(yNorm[:,trainIdx,:])[plotSampleTrain])
+              plot(p)
             end
         end
     end
@@ -342,7 +442,7 @@ function LSTMpredict(w, x)
    # wWg = w[8] # from hidden to candiate hidden update
    # Wout =  w[9] # from hidden to predictions
     biasInp = w[10] ### bias from input (1, nHid)
-   biasOut =w[11] ### bias to output (1) (one output only)
+    biasOut =w[11] ### bias to output (1) (one output only)
 
 
     for s=1:nSamp
