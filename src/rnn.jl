@@ -132,9 +132,19 @@ function RNN_predict_loop(s,nTimes,nVar,nHid,hidden,hidden_pre,hidprew2,ypred,xc
 
 end
 
+## Should move to stable code, when performance ok
+function mseLoss(w, x, y, model)
+    return sumabs2(predict(model,w, x) .- y) / size(y,2)
+end
+
+## Should move to stable code, when performance ok
+function mseLoss_old(w, x, y, model)
+    return sumabs2(predict_old(model,w, x) .- y) / size(y,2)
+end
+
 derivActivation(y,dy) = y.*(1-y).*dy # Maybe this should be matrix mult of dh * dh'
 derivActivation!(dest,hidden,dh) = for j=1:length(hidden) dest[j]=hidden[j]*(1-hidden[j])*dh[j] end
-derivloss(ytrue,ypred)=ytrue-ypred
+deriv(::typeof(mseLoss),ytrue,ypred)=ytrue-ypred
 
 function Knet.sigm(xi::Number)
   if xi>=0
@@ -147,7 +157,7 @@ function Knet.sigm(xi::Number)
 end
 
 
-function predict_with_gradient(::RNNModel,w, x,ytrue) ### This implements w as a vector
+function predict_with_gradient(::RNNModel,w, x,ytrue,lossFunc) ### This implements w as a vector
 
   # Reshape weight vectors and create temp arrays
   nTimes,nSamp,nVar,nHid,ypred,w1,w2,w3,w4,w5,hidden_pre,xw1,hidprew2,xcur,hidden = RNN_init_pred(w,x)
@@ -168,7 +178,7 @@ function predict_with_gradient(::RNNModel,w, x,ytrue) ### This implements w as a
     for i=nTimes:-1:1
 
       # Derivative of the loss function
-      dy = derivloss(ytrue[i,s],ypred[i,s])
+      dy = deriv(lossFunc,ytrue[i,s],ypred[i,s])
 
       # Derivative of the activations function (still a scalar)
       dy2 = derivActivation(ypred[i,s],dy)
@@ -220,9 +230,9 @@ function predict_with_gradient(::RNNModel,w, x,ytrue) ### This implements w as a
 end
 
 
-function loss(w, x, y)
-    return sumabs2(predict_from_wVect(w, x) .- y) / size(y,2)
-end
+#function loss(w, x, y)
+#    return sumabs2(predict_from_wVect(w, x) .- y) / size(y,2)
+#end
 
 
 ### Update the weights based on the current gradient dw, and the "normal" (not Nesterov) momentum approach
@@ -269,10 +279,7 @@ function iniWeights(nVarX::Int=3, nHid::Int=12, NNtype="RNN")
     return weights
 end
 
-## Should move to stable code, when performance ok
-function mseLoss(w, x, y, model)
-    return sumabs2(predict_old(model,w, x) .- y) / size(y,2)
-end
+
 
 
 function RNNModel(nVar,nHid,w=iniWeights(nVar,nHid,"RNN"))
@@ -393,7 +400,7 @@ function train_net(
         ### Calc the loss gradient dloss/dw based on the current weight vector and the sample
         ### This is done here with the predef Adagrad method. Could be done explicitely to speed up
         #dw = lossgradient(w, xNorm[:,trainIdx[batchIdx] ,:], yNorm[:, trainIdx[batchIdx],:])
-        dw = predict_with_gradient(model,model.weights,xNorm[:,trainIdx[batchIdx] ,:], yNorm[:, trainIdx[batchIdx],:])
+        dw = predict_with_gradient(model,model.weights,xNorm[:,trainIdx[batchIdx] ,:], yNorm[:, trainIdx[batchIdx],:],lossFunc)
         ### Update w according to loss gradient and algorithm (incl, parameters therein)
         w, params = update!(w, dw, searchParams)
 
