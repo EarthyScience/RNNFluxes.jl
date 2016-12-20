@@ -51,6 +51,31 @@ function predict(::RNNModel,w, x) ### This implements w as a vector
   return ypred
 end
 
+function predict_old(::RNNModel,w, x) ### This implements w as a vector
+    nTimes, nSamp, nVar = size(x)
+    nHid = Int(-0.5*(nVar + 2) + sqrt(0.25*(nVar+2)^2-1+length(w)))
+    ypred=Array{typeof(w[1])}(nTimes, nSamp)
+    w1=reshape(w[1:nVar*nHid], nVar, nHid)
+    w2=reshape(w[nVar*nHid+1:nVar*nHid+nHid*nHid], nHid, nHid)
+    w3=reshape(w[nVar*nHid+nHid*nHid+1:nVar*nHid+nHid*nHid+nHid], nHid, 1)
+    w4=reshape(w[nVar*nHid+nHid*nHid+nHid+1:nVar*nHid+nHid*nHid+nHid+nHid], 1, nHid)
+    w5=reshape(w[nVar*nHid+nHid*nHid+nHid+nHid+1:nVar*nHid+nHid*nHid+nHid+nHid+1], 1)
+    for s=1:nSamp  ## could this loop be parallelized into say 100 parallel instances? Even a speed up factor 10 would make quite some diff
+        hidden = zeros(eltype(w[1]),1, nHid)
+            for i=1:nTimes
+                ## w[1] weights from input to hidden
+                ## w[2] weights hidden to hidden
+                ## w[3] weights hidden to output
+                ## w[4] bias to hidden
+                ## w[5] bias to output
+                hidden = sigm(x[i:i, s, :] * w1 + w4 + hidden * w2)
+                # ypred[i,s]=sigm(hidden * w3)[1] + w5[1]
+				        ypred[i,s]=sigm(hidden * w3 + w5)[1]
+            end
+    end
+    return ypred
+end
+
 function RNN_init_pred(w,x)
 
   nTimes, nSamp, nVar = size(x)
@@ -95,7 +120,7 @@ function RNN_predict_loop(s,nTimes,nVar,nHid,hidden,hidden_pre,hidprew2,ypred,xc
 
       #Add both together and apply activation function
       @inbounds for j=1:nHid
-        hidden[1,j,i]=sigm(xw1[j]+hidprew2[j])
+        hidden[1,j,i]=sigm(xw1[j]+hidprew2[j]+w4[j])
       end
 
       #Store hidden state in hidden_pre matrix
@@ -246,7 +271,7 @@ end
 
 ## Should move to stable code, when performance ok
 function mseLoss(w, x, y, model)
-    return sumabs2(predict(model,w, x) .- y) / size(y,2)
+    return sumabs2(predict_old(model,w, x) .- y) / size(y,2)
 end
 
 
