@@ -32,6 +32,7 @@ type RNNModel <: FluxModel
   yNorm::Array{Float64,3}
   xNorm::Array{Float64,3}
   xEx::Vector{Tuple{Float64,Float64}}
+  rnnType::String
 end
 
 ### (The same) predict function using a linear Vector of w (needed for update!)
@@ -51,29 +52,69 @@ function predict(::RNNModel,w, x) ### This implements w as a vector
   return ypred
 end
 
-function predict_old(::RNNModel,w, x) ### This implements w as a vector
+function predict_old(model::RNNModel,w, x) ### This implements w as a vector
     nTimes, nSamp, nVar = size(x)
-    nHid = Int(-0.5*(nVar + 2) + sqrt(0.25*(nVar+2)^2-1+length(w)))
     ypred=Array{typeof(w[1])}(nTimes, nSamp)
-    w1=reshape(w[1:nVar*nHid], nVar, nHid)
+
+    if model.rnnType == "RNN"
+      nHid = Int(-0.5*(nVar + 2) + sqrt(0.25*(nVar+2)^2-1+length(w)))
+      w1=reshape(w[1:nVar*nHid], nVar, nHid)
+      w2=reshape(w[nVar*nHid+1:nVar*nHid+nHid*nHid], nHid, nHid)
+      w3=reshape(w[nVar*nHid+nHid*nHid+1:nVar*nHid+nHid*nHid+nHid], nHid, 1)
+      w4=reshape(w[nVar*nHid+nHid*nHid+nHid+1:nVar*nHid+nHid*nHid+nHid+nHid], 1, nHid)
+      w5=reshape(w[nVar*nHid+nHid*nHid+nHid+nHid+1:nVar*nHid+nHid*nHid+nHid+nHid+1], 1)
+      for s=1:nSamp  ## could this loop be parallelized into say 100 parallel instances? Even a speed up factor 10 would make quite some diff
+          hidden = zeros(eltype(w[1]),1, nHid)
+              for i=1:nTimes
+                  ## w[1] weights from input to hidden
+                  ## w[2] weights hidden to hidden
+                  ## w[3] weights hidden to output
+                  ## w[4] bias to hidden
+                  ## w[5] bias to output
+                  hidden = sigm(x[i:i, s, :] * w1 + w4 + hidden * w2)
+                  # ypred[i,s]=sigm(hidden * w3)[1] + w5[1]
+  				        ypred[i,s]=sigm(hidden * w3 + w5)[1]
+              end
+      end
+  elseif model.rnnType == "LSTM"
+    #nHid = Int(-0.5* (nVar + 1) + sqrt(0.25*(nVar + 1)^2 + 0.25*length(w)))
+    #nHid = Int(-0.125* (4*nVar + 5) + sqrt(0.25*(nVar)^2 + 0.625*nVar + (25/64) +0.25*length(w)))
+    nHid = Int(-0.125* (4*nVar + 5) + sqrt(0.25*(nVar)^2 + 0.625*nVar + (9/64) +0.25*length(w)))
+    dim1 = Int(nVar * nHid + nHid * nHid + nHid)
+    # Input Block
+    w1=reshape(w[1:nVar*nHid], nHid, nVar)
     w2=reshape(w[nVar*nHid+1:nVar*nHid+nHid*nHid], nHid, nHid)
-    w3=reshape(w[nVar*nHid+nHid*nHid+1:nVar*nHid+nHid*nHid+nHid], nHid, 1)
-    w4=reshape(w[nVar*nHid+nHid*nHid+nHid+1:nVar*nHid+nHid*nHid+nHid+nHid], 1, nHid)
-    w5=reshape(w[nVar*nHid+nHid*nHid+nHid+nHid+1:nVar*nHid+nHid*nHid+nHid+nHid+1], 1)
-    for s=1:nSamp  ## could this loop be parallelized into say 100 parallel instances? Even a speed up factor 10 would make quite some diff
-        hidden = zeros(eltype(w[1]),1, nHid)
-            for i=1:nTimes
-                ## w[1] weights from input to hidden
-                ## w[2] weights hidden to hidden
-                ## w[3] weights hidden to output
-                ## w[4] bias to hidden
-                ## w[5] bias to output
-                hidden = sigm(x[i:i, s, :] * w1 + w4 + hidden * w2)
-                # ypred[i,s]=sigm(hidden * w3)[1] + w5[1]
-				        ypred[i,s]=sigm(hidden * w3 + w5)[1]
-            end
+    w3=reshape(w[nVar*nHid+nHid*nHid+1:dim1], nHid, 1)
+    # Input gate
+    w4=reshape(w[dim1+1:dim1+nVar*nHid], nHid, nVar)
+    w5=reshape(w[(dim1 + nVar * nHid +1):(dim1 + nVar * nHid + nHid * nHid)], nHid, nHid)
+    w6=reshape(w[dim1 + nVar * nHid + nHid*nHid+1:dim1*2], nHid, 1)
+    # Forget Gate
+    w7=reshape(w[dim1*2+1:dim1*2+nVar*nHid], nHid, nVar)
+    w8=reshape(w[(dim1*2 + nVar * nHid +1):(dim1*2 + nVar * nHid + nHid * nHid)], nHid, nHid)
+    w9=reshape(w[dim1*2 + nVar * nHid + nHid*nHid+1:dim1*3], nHid, 1)
+    # Output Gate
+    w10=reshape(w[dim1*3+1:dim1*3+nVar*nHid], nHid, nVar)
+    w11=reshape(w[(dim1*3 + nVar * nHid +1):(dim1*3 + nVar * nHid + nHid * nHid)], nHid, nHid)
+    w12=reshape(w[dim1*3 + nVar * nHid + nHid*nHid+1:dim1*4], nHid, 1)
+    # Hidden to Output weights
+    w13=reshape(w[dim1*4+1:(dim1*4 + nHid)], 1, nHid)
+    w14=reshape(w[(dim1*4 + nHid + 1):(dim1*4 + nHid + 1)], 1, 1)
+    for s=1:nSamp
+      hidden = zeros(eltype(w[1]),1, nHid)
+      state = copy(hidden')
+      for i=1:nTimes
+          a = tanh(w1 * x[i:i, s, :]' + w2 * hidden' + w3)
+          igate = sigm(w4 * x[i:i, s, :]' + w5 * hidden' + w6)
+          fgate = sigm(w7 * x[i:i, s, :]' + w8 * hidden' + w9)
+          ogate = sigm(w10 * x[i:i, s, :]' + w11 * hidden' + w12)
+          state = a .* igate + fgate .* state
+          hidden = (tanh(state) .* ogate)'
+          ypred[i,s]=sigm(w13 * hidden' + w14)[1]
+      end
     end
-    return ypred
+  end
+  return ypred
 end
 
 function RNN_init_pred(w,x)
@@ -266,8 +307,8 @@ end
 
 ### for 1/sqrt(n) rule of thumb cf. http://www.wildml.com/2015/09/recurrent-neural-networks-tutorial-part-2-implementing-a-language-model-rnn-with-python-numpy-and-theano/
 
-function iniWeights(nVarX::Int=3, nHid::Int=12, NNtype="RNN")
-    if NNtype=="RNN"
+function iniWeights(nVarX::Int=3, nHid::Int=12, rnnType="RNN")
+    if rnnType=="RNN"
               weights = -1.0 .+ 2.0 .*
         [rand_flt(-1./sqrt(nVarX), 1./sqrt(nVarX), nVarX, nHid),  ## Input to hidden
             rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid,nHid),  ## HIdden to hidden
@@ -275,19 +316,36 @@ function iniWeights(nVarX::Int=3, nHid::Int=12, NNtype="RNN")
             0.0 * rand(Float64, 1, nHid),  ## Bias to hidden initialized to zero
             0.0 * rand(Float64, 1)] ## bias to output to zero
         weights=raggedToVector(weights)
+    elseif rnnType=="LSTM"
+      weights = -1.0 + 2.0 .*
+      [rand_flt(-1./sqrt(nVarX), 1./sqrt(nVarX), nHid, nVarX),  ## Input block
+          rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid,nHid),
+          rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid, 1),
+          rand_flt(-1./sqrt(nVarX), 1./sqrt(nVarX), nHid, nVarX),  ## Input gate
+          rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid,nHid),
+          rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid, 1),
+          rand_flt(-1./sqrt(nVarX), 1./sqrt(nVarX), nHid, nVarX),  ## Forget Gate
+          rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid,nHid),
+          rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid, 1),
+          rand_flt(-1./sqrt(nVarX), 1./sqrt(nVarX), nHid, nVarX),  ## Output Gate
+          rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid,nHid),
+          rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid, 1),
+          0.0 * rand(Float64, 1, nHid), ## Linear activation weights
+          0.0 * rand(Float64, 1)] ## Linear activation bias
+      weights=raggedToVector(weights)
     end
     return weights
 end
 
-
-
-
-function RNNModel(nVar,nHid,w=iniWeights(nVar,nHid,"RNN"))
-
-  totalNweights=nVar*nHid + nHid * nHid + 2*nHid + 1
-
+function RNNModel(nVar,nHid, rnnType = "RNN")
+  w=iniWeights(nVar,nHid, rnnType)
+  if rnnType == "RNN"
+    totalNweights=nVar*nHid + nHid * nHid + 2*nHid + 1
+  elseif rnnType == "LSTM"
+    totalNweights=4*(nVar * nHid + nHid * nHid + nHid) + nHid + 1
+  end
   length(w) == totalNweights ||  error("Length of weights $(size(weights,1)) does not match needed length $totalNweights!")
-  RNNModel(w,nHid,0,identity,Int[],Float64[],Float64[],NaN,NaN,zeros(0,0,0),zeros(0,0,0),Tuple{Float64,Float64}[])
+  RNNModel(w,nHid,0,identity,Int[],Float64[],Float64[],NaN,NaN,zeros(0,0,0),zeros(0,0,0),Tuple{Float64,Float64}[], rnnType)
 end
 
 #Training:
@@ -313,7 +371,9 @@ function train_net(
 	### How many to plot in MOD vs OBS scatter plot
 	nPlotsample=2000
     )
-
+    if model.rnnType == "LSTM"
+      lossFunc = mseLoss_old
+    end
     nTimes, nSamp, nVarX=size(x)
 
     lossesTrain = model.lossesTrain
@@ -323,6 +383,7 @@ function train_net(
     ## Define the used loss-Function based on the method to predict and the function defining how the predictions
     ## are compared with the data (default is Mean Squared Error across sequences)
     loss(w, x, y)=lossFunc(w, x, y, model)
+    lossgradient=grad(loss)
 
     ### Normalize y to 0,1
     yMin, yMax = extrema(y)
@@ -371,7 +432,11 @@ function train_net(
     push!(lossesTrain,loss(w, xNorm[:, trainIdx,:], yNorm[:, trainIdx, :]))
     push!(lossesVali,loss(w, xNorm[:, valiIdx,:], yNorm[:, valiIdx, :]))
     push!(outputtimesteps,isempty(outputtimesteps) ? 1 : outputtimesteps[end]+1)
-    curPredAll=predict(model,w, xNorm)
+    if model.rnnType == "LSTM"
+      curPredAll=predict_old(model, w, xNorm)
+    else
+      curPredAll=predict(model, w, xNorm)
+    end
     info("Before training loss, Training set: ", lossesTrain[end], " Validation: ", lossesVali[end])
 
     irsig=Signal(false)
@@ -399,8 +464,11 @@ function train_net(
         batchIdx=sample(1:nTrSamp,batchSize, replace=false)
         ### Calc the loss gradient dloss/dw based on the current weight vector and the sample
         ### This is done here with the predef Adagrad method. Could be done explicitely to speed up
-        #dw = lossgradient(w, xNorm[:,trainIdx[batchIdx] ,:], yNorm[:, trainIdx[batchIdx],:])
-        dw = predict_with_gradient(model,model.weights,xNorm[:,trainIdx[batchIdx] ,:], yNorm[:, trainIdx[batchIdx],:],lossFunc)
+        if model.rnnType == "LSTM"
+          dw = lossgradient(w, xNorm[:,trainIdx[batchIdx] ,:], yNorm[:, trainIdx[batchIdx],:])
+        else
+          dw = predict_with_gradient(model,model.weights,xNorm[:,trainIdx[batchIdx] ,:], yNorm[:, trainIdx[batchIdx],:],lossFunc)
+        end
         ### Update w according to loss gradient and algorithm (incl, parameters therein)
         w, params = update!(w, dw, searchParams)
 
@@ -421,7 +489,11 @@ function train_net(
             if plotProgress
               latestStart=outputtimesteps[end] - minimum([trunc(Int,outputtimesteps[end]*0.66) 1000])
               subTS=findfirst(i->i>=latestStart,outputtimesteps):length(outputtimesteps)
-              curPredAll=predict(model,w, xNorm)
+              if model.rnnType == "LSTM"
+                curPredAll=predict_old(model,w, xNorm)
+              else
+                curPredAll=predict(model,w, xNorm)
+              end
               p[1]=(outputtimesteps,lossesTrain)
               p[2]=(vec(curPredAll[:,valiIdx,:])[plotSampleVali],vec(yNorm[:,valiIdx,:])[plotSampleVali])
               p[3]=(outputtimesteps[subTS],lossesTrain[subTS])
@@ -447,58 +519,14 @@ function predict_after_train(model::FluxModel, x)
     for v in 1:size(model.xEx,1);
        xNorm[:,:,v] = 2.0.* ((x[:,:,v]-model.xEx[v][1])/(model.xEx[v][2]-model.xEx[v][1])-0.5)
     end
-    yNorm = predict(model,model.weights, xNorm)
+    if model.rnnType == "LSTM"
+      yNorm = predict_old(model,model.weights, xNorm)
+    else
+      yNorm = predict(model,model.weights, xNorm)
+    end
     yPred = yNorm .* (model.yMax-model.yMin) .+ model.yMin
 
     return yPred
-end
-
-## after http://www.wildml.com/2015/10/recurrent-neural-network-tutorial-part-4-implementing-a-grulstm-rnn-with-python-and-theano/
-function LSTMpredict(w, x)
-
-    ### So far only implemented with the nicely interpretable ragged w - Vector.
-    ### TODO: accept w as linear vector and convert into ragged Vector (like in predict_from_wVEct in "../stableCode/NeuralNetUtils.jl")
-
-    nTimes, nSamp, nVar = size(x)
-    #nSamp = size(x, 2)
-    ypred=Array{typeof(w[1][1])}(nTimes, nSamp) ## Currently only one y - Variable can eb predicted
-
-
-    # wUi = w[1] # from x to input gate (nVar, nHid)
-    # wWi = w[2] # from hidden to input gate (nHid, nhid)
-   # wUf = w[3] # from x to forget gate
-   # wWf = w[4] # from hidden to forget gate
-   # wUo = w[5] # from x to output gate
-   # wWo = w[6] # from hidden to output gate
-   # wUg = w[7] # from x to candidate hidden update
-   # wWg = w[8] # from hidden to candiate hidden update
-   # Wout =  w[9] # from hidden to predictions
-    biasInp = w[10] ### bias from input (1, nHid)
-    biasOut =w[11] ### bias to output (1) (one output only)
-
-
-    for s=1:nSamp
-        hidden = zeros(eltype(w[1]),1, size(w[2],1)) ## w[2] connects the hidden nodes
-        c=copy(hidden)
-        for i=1:nTimes
-            ## w[1] weights from input to hidden (must have dim  nVar, nHid)
-            ## w[2] weights hidden to hidden (must have dim  nHid, nHid)
-            ## w[3] weights hidden to output
-            ## w[4] bias to hidden
-            ## w[5] bias to output
-
-            iGate = sigm(x[i:i, s, :] * w[1] + hidden * w[2] + biasInp)
-            fGate = sigm(x[i:i, s, :] * w[3] + hidden * w[4] + biasInp)
-            oGate = sigm(x[i:i, s, :] * w[5] + hidden * w[6] + biasInp)
-            g = sigm(x[i:i, s, :] * w[7] + hidden * w[8] + biasInp)
-            c = c .* fGate + g .* iGate
-            hidden = tanh(c) .* oGate
-
-            ypred[i,s]=sigm(hidden * w[9]+ biasOut)[1]
-
-        end
-    end
-    return ypred
 end
 
 function raggedToVector(raggedArray)
