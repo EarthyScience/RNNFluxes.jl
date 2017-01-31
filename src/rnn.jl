@@ -97,9 +97,10 @@ function predict_old(model::RNNModel,w, x) ### This implements w as a vector
     w10=reshape(w[dim1*3+1:dim1*3+nVar*nHid], nHid, nVar)
     w11=reshape(w[(dim1*3 + nVar * nHid +1):(dim1*3 + nVar * nHid + nHid * nHid)], nHid, nHid)
     w12=reshape(w[dim1*3 + nVar * nHid + nHid*nHid+1:dim1*4], nHid, 1)
-    # Hidden to Output weights
+    # Hidden to Output weights and a small bias
     w13=reshape(w[dim1*4+1:(dim1*4 + nHid)], 1, nHid)
     w14=reshape(w[(dim1*4 + nHid + 1):(dim1*4 + nHid + 1)], 1, 1)
+
     for s=1:nSamp
       hidden = zeros(eltype(w[1]),1, nHid)
       state = copy(hidden')
@@ -186,7 +187,7 @@ end
 derivActivation(y,dy) = y.*(1-y).*dy # Maybe this should be matrix mult of dh * dh'
 derivActivation!(dest,hidden,dh) = for j=1:length(hidden) dest[j]=hidden[j]*(1-hidden[j])*dh[j] end
 deriv(::typeof(mseLoss),ytrue,ypred)=ytrue-ypred
-
+deriv(::typeof(mseLoss_old),ytrue,ypred)=ytrue-ypred
 function Knet.sigm(xi::Number)
   if xi>=0
     z=exp(-xi)
@@ -465,7 +466,8 @@ function train_net(
         ### Calc the loss gradient dloss/dw based on the current weight vector and the sample
         ### This is done here with the predef Adagrad method. Could be done explicitely to speed up
         if model.rnnType == "LSTM"
-          dw = lossgradient(w, xNorm[:,trainIdx[batchIdx] ,:], yNorm[:, trainIdx[batchIdx],:])
+          dw = predict_with_gradient_lstm(model,model.weights,xNorm[:,trainIdx[batchIdx] ,:], yNorm[:, trainIdx[batchIdx],:],lossFunc)
+          #dw = lossgradient(w, xNorm[:,trainIdx[batchIdx] ,:], yNorm[:, trainIdx[batchIdx],:])
         else
           dw = predict_with_gradient(model,model.weights,xNorm[:,trainIdx[batchIdx] ,:], yNorm[:, trainIdx[batchIdx],:],lossFunc)
         end
@@ -542,4 +544,97 @@ function raggedToVector(raggedArray)
         totalLength+=elemLength
     end
     return ragged_as_Vector
+end
+
+function predict_with_gradient_lstm(::RNNModel,w, x,ytrue,lossFunc) ### This implements w as a vector
+  nTimes, nSamp, nVar = size(x)
+  ypred=Array{typeof(w[1])}(nTimes, nSamp)
+
+  nHid = Int(-0.125* (4*nVar + 5) + sqrt(0.25*(nVar)^2 + 0.625*nVar + (9/64) +0.25*length(w)))
+  dim1 = Int(nVar * nHid + nHid * nHid + nHid)
+  # Input Block
+  w1=reshape(w[1:nVar*nHid], nHid, nVar)
+  w2=reshape(w[nVar*nHid+1:nVar*nHid+nHid*nHid], nHid, nHid)
+  w3=reshape(w[nVar*nHid+nHid*nHid+1:dim1], nHid, 1)
+  # Input gate
+  w4=reshape(w[dim1+1:dim1+nVar*nHid], nHid, nVar)
+  w5=reshape(w[(dim1 + nVar * nHid +1):(dim1 + nVar * nHid + nHid * nHid)], nHid, nHid)
+  w6=reshape(w[dim1 + nVar * nHid + nHid*nHid+1:dim1*2], nHid, 1)
+  # Forget Gate
+  w7=reshape(w[dim1*2+1:dim1*2+nVar*nHid], nHid, nVar)
+  w8=reshape(w[(dim1*2 + nVar * nHid +1):(dim1*2 + nVar * nHid + nHid * nHid)], nHid, nHid)
+  w9=reshape(w[dim1*2 + nVar * nHid + nHid*nHid+1:dim1*3], nHid, 1)
+  # Output Gate
+  w10=reshape(w[dim1*3+1:dim1*3+nVar*nHid], nHid, nVar)
+  w11=reshape(w[(dim1*3 + nVar * nHid +1):(dim1*3 + nVar * nHid + nHid * nHid)], nHid, nHid)
+  w12=reshape(w[dim1*3 + nVar * nHid + nHid*nHid+1:dim1*4], nHid, 1)
+  # Hidden to Output weights and a small bias
+  w13=reshape(w[dim1*4+1:(dim1*4 + nHid)], 1, nHid)
+  w14=reshape(w[(dim1*4 + nHid + 1):(dim1*4 + nHid + 1)], 1, 1)
+
+  # Allocate additional arrays for derivative calculation
+  dw1, dw4, dw7, dw10 = [zeros(size(w1)) for i=1:nSamp], [zeros(size(w4)) for i=1:nSamp], [zeros(size(w7)) for i=1:nSamp], [zeros(size(w10)) for i=1:nSamp]
+  dw2, dw5, dw8, dw11 = [zeros(size(w2)) for i=1:nSamp], [zeros(size(w5)) for i=1:nSamp], [zeros(size(w8)) for i=1:nSamp], [zeros(size(w11)) for i=1:nSamp]
+  dw3, dw6, dw9, dw12 = [zeros(size(w3)) for i=1:nSamp], [zeros(size(w6)) for i=1:nSamp], [zeros(size(w9)) for i=1:nSamp], [zeros(size(w12)) for i=1:nSamp]
+  dw13, dw14 = [zeros(size(w13)) for i=1:nSamp], [zeros(size(w14)) for i=1:nSamp]
+
+  for s=1:nSamp
+    out, state = zeros(nTimes + 1, nHid), zeros(nTimes + 1, nHid)
+    dState, dOut  = zeros(nHid,1), zeros(nHid,1)
+    dInput, dIgate, dFgate, dOgate = zeros(nTimes+1,nHid), zeros(nTimes+1,nHid), zeros(nTimes+1,nHid), zeros(nTimes+1,nHid)
+    input, igate, fgate, ogate = Array{Float64}(nTimes, nHid),Array{Float64}(nTimes, nHid),zeros(nTimes+1, nHid),Array{Float64}(nTimes, nHid)
+
+    for i=1:nTimes
+        input[i,:] = tanh(w1 * x[i:i, s, :]' + w2 * out[i ,:] + w3)
+        igate[i,:] = sigm(w4 * x[i:i, s, :]' + w5 * out[i ,:] + w6)
+        fgate[i,:] = sigm(w7 * x[i:i, s, :]' + w8 * out[i ,:] + w9)
+        ogate[i ,:] = sigm(w10 * x[i:i, s, :]' + w11 * out[i ,:] + w12)
+        state[i+1,:] = input[i ,:] .* igate[i ,:] + fgate[i ,:] .* state[i ,:]
+        out[i+1,:] = tanh(state[i+1 ,:]) .* ogate[i ,:]
+        ypred[i,s] = sigm(w13 * out[i+1,:] + w14)[1]
+    end
+
+    # Run the derivative backward pass
+    for i=nTimes:-1:1
+
+      # Derivative of the loss function
+      dy = deriv(lossFunc,ytrue[i,s],ypred[i,s])
+      # Derivative of the activations function (still a scalar)
+      dy2 = derivActivation(ypred[i,s],dy)
+      dw13[s] += dy2 * out[i+1,:]'
+      dw14[s][1] += dy2
+
+      dOut = w13' * dy2 + w2' * dInput[i+1,:] + w5' * dIgate[i+1,:] + w8' * dFgate[i+1,:] + w11' * dOgate[i+1,:]
+      dState = dOut .* ogate[i,:] .* (1 - tanh(state[i+1,:]) .* tanh(state[i+1,:])) + dState .* fgate[i+1,:]
+      dInput[i,:] = dState .* igate[i,:] .* (1 - input[i,:] .* input[i,:])
+      dIgate[i,:] = dState .* input[i,:] .* igate[i,:] .* (1 - igate[i,:])
+      dFgate[i,:] = dState .* state[i,:] .* fgate[i,:] .* (1 - fgate[i,:])
+      dOgate[i,:] = dOut .* tanh(state[i+1,:]) .* ogate[i,:] .* (1 - ogate[i,:])
+
+      # Update input weights
+      dw1[s] += dInput[i, :] * x[i:i, s, :]
+      dw4[s] += dIgate[i, :] * x[i:i, s, :]
+      dw7[s] += dFgate[i, :] * x[i:i, s, :]
+      dw10[s] += dOgate[i, :] * x[i:i, s, :]
+      # Update hidden weights
+      if i<nTimes
+        dw2[s] += dInput[i+1,:] *  out[i+1,:]'
+        dw5[s] += dIgate[i+1,:] *  out[i+1,:]'
+        dw8[s] += dFgate[i+1,:] *  out[i+1,:]'
+        dw11[s] += dOgate[i+1,:] *  out[i+1,:]'
+      end
+      # Update biases
+      dw3[s] += dInput[i+1,:]
+      dw6[s] += dIgate[i+1,:]
+      dw9[s] += dFgate[i+1,:]
+      dw12[s] += dOgate[i+1,:]
+    end
+
+  end
+  return -[reshape(sum(dw1), nVar*nHid); reshape(sum(dw2), nHid*nHid); reshape(sum(dw3), nHid);
+  reshape(sum(dw4), nVar*nHid); reshape(sum(dw5), nHid*nHid); reshape(sum(dw6), nHid);
+  reshape(sum(dw7), nVar*nHid); reshape(sum(dw8), nHid*nHid); reshape(sum(dw9), nHid);
+  reshape(sum(dw10), nVar*nHid); reshape(sum(dw11), nHid*nHid); reshape(sum(dw12), nHid);
+  reshape(sum(dw13), nHid); reshape(sum(dw14), 1)]
+  #return -[reshape(sum(dWxh), nVar*nHid ); reshape(sum(dWhh), nHid*nHid) ; reshape(sum(dWhy),nHid) ; reshape(sum(dbh),nHid) ; reshape(sum(dby),1)]
 end

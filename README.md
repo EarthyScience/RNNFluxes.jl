@@ -6,6 +6,12 @@
 
 [![codecov.io](http://codecov.io/github/meggart/RNNFluxes.jl/coverage.svg?branch=master)](http://codecov.io/github/meggart/RNNFluxes.jl?branch=master)
 
+# To-Do
+
+* Make the LSTM Gradient pretty and fast (á la Fabian)
+* Implement truncated BPTT and Dropout
+* Add GRU and/or LSTM with peepholes
+
 # Benchmarking: RNN vs LSTM
 
 When both are using the old __autograd__ automatic diff to do the backprop, RNN is about __3__ times faster than LSTM.
