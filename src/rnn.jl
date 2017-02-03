@@ -2,10 +2,12 @@ import Plots: scatter!, plot
 import Reactive: Signal, value
 import Interact: checkbox
 import StatsBase: sample
-using Knet
+#using Knet
+import Knet: sigm
 export iniWeights, train_net, predict_after_train, loadSeasonal, RNNModel
 #import Interact: checkbox
 ### Predict function using the ragged Array directly (deprecated)
+include("helper_macros.jl")
 
 """
     abstract FluxModel
@@ -35,6 +37,28 @@ type RNNModel <: FluxModel
   rnnType::String
 end
 
+
+abstract FluxModel
+
+"""
+    type LSTM
+
+Implementation of an LSTM.
+"""
+type LSTMModel <: FluxModel
+  weights::Vector{Float64}
+  nHid::Int
+  nVarX::Int
+  lossFunc::Function
+  outputtimesteps::Vector{Int}
+  lossesTrain::Vector{Float64}
+  lossesVali::Vector{Float64}
+  yMin::Float64
+  yMax::Float64
+  yNorm::Array{Float64,3}
+  xNorm::Array{Float64,3}
+  xEx::Vector{Tuple{Float64,Float64}}
+end
 ### (The same) predict function using a linear Vector of w (needed for update!)
 ### and extracting the relevant Matrices, this is faster (cf. Fabian tests and
 ### nd Adam does not easily work with the ragged vector)
@@ -52,67 +76,67 @@ function predict(::RNNModel,w, x) ### This implements w as a vector
   return ypred
 end
 
+function predict(model::LSTMModel,w,x)
+  nTimes, nSamp, nVar = size(x)
+  ypred=Array{typeof(w[1])}(nTimes, nSamp)
+
+  nHid = model.nHid
+  dim1 = Int(nVar * nHid + nHid * nHid + nHid)
+  # Input Block
+  w1=reshape(w[1:nVar*nHid], nHid, nVar)
+  w2=reshape(w[nVar*nHid+1:nVar*nHid+nHid*nHid], nHid, nHid)
+  w3=reshape(w[nVar*nHid+nHid*nHid+1:dim1], nHid, 1)
+  # Input gate
+  w4=reshape(w[dim1+1:dim1+nVar*nHid], nHid, nVar)
+  w5=reshape(w[(dim1 + nVar * nHid +1):(dim1 + nVar * nHid + nHid * nHid)], nHid, nHid)
+  w6=reshape(w[dim1 + nVar * nHid + nHid*nHid+1:dim1*2], nHid, 1)
+  # Forget Gate
+  w7=reshape(w[dim1*2+1:dim1*2+nVar*nHid], nHid, nVar)
+  w8=reshape(w[(dim1*2 + nVar * nHid +1):(dim1*2 + nVar * nHid + nHid * nHid)], nHid, nHid)
+  w9=reshape(w[dim1*2 + nVar * nHid + nHid*nHid+1:dim1*3], nHid, 1)
+  # Output Gate
+  w10=reshape(w[dim1*3+1:dim1*3+nVar*nHid], nHid, nVar)
+  w11=reshape(w[(dim1*3 + nVar * nHid +1):(dim1*3 + nVar * nHid + nHid * nHid)], nHid, nHid)
+  w12=reshape(w[dim1*3 + nVar * nHid + nHid*nHid+1:dim1*4], nHid, 1)
+  # Hidden to Output weights and a small bias
+  w13=reshape(w[dim1*4+1:(dim1*4 + nHid)], 1, nHid)
+  w14=reshape(w[(dim1*4 + nHid + 1):(dim1*4 + nHid + 1)], 1, 1)
+
+  for s=1:nSamp
+    hidden = zeros(eltype(w[1]),1, nHid)
+    state = copy(hidden')
+    for i=1:nTimes
+        a = tanh(w1 * x[i:i, s, :]' + w2 * hidden' + w3)
+        igate = sigm(w4 * x[i:i, s, :]' + w5 * hidden' + w6)
+        fgate = sigm(w7 * x[i:i, s, :]' + w8 * hidden' + w9)
+        ogate = sigm(w10 * x[i:i, s, :]' + w11 * hidden' + w12)
+        state = a .* igate + fgate .* state
+        hidden = (tanh(state) .* ogate)'
+        ypred[i,s]=sigm(w13 * hidden' + w14)[1]
+    end
+  end
+  ypred
+end
+
 function predict_old(model::RNNModel,w, x) ### This implements w as a vector
-    nTimes, nSamp, nVar = size(x)
-    ypred=Array{typeof(w[1])}(nTimes, nSamp)
 
-    if model.rnnType == "RNN"
-      nHid = Int(-0.5*(nVar + 2) + sqrt(0.25*(nVar+2)^2-1+length(w)))
-      w1=reshape(w[1:nVar*nHid], nVar, nHid)
-      w2=reshape(w[nVar*nHid+1:nVar*nHid+nHid*nHid], nHid, nHid)
-      w3=reshape(w[nVar*nHid+nHid*nHid+1:nVar*nHid+nHid*nHid+nHid], nHid, 1)
-      w4=reshape(w[nVar*nHid+nHid*nHid+nHid+1:nVar*nHid+nHid*nHid+nHid+nHid], 1, nHid)
-      w5=reshape(w[nVar*nHid+nHid*nHid+nHid+nHid+1:nVar*nHid+nHid*nHid+nHid+nHid+1], 1)
-      for s=1:nSamp  ## could this loop be parallelized into say 100 parallel instances? Even a speed up factor 10 would make quite some diff
-          hidden = zeros(eltype(w[1]),1, nHid)
-              for i=1:nTimes
-                  ## w[1] weights from input to hidden
-                  ## w[2] weights hidden to hidden
-                  ## w[3] weights hidden to output
-                  ## w[4] bias to hidden
-                  ## w[5] bias to output
-                  hidden = sigm(x[i:i, s, :] * w1 + w4 + hidden * w2)
-                  # ypred[i,s]=sigm(hidden * w3)[1] + w5[1]
-  				        ypred[i,s]=sigm(hidden * w3 + w5)[1]
-              end
-      end
-  elseif model.rnnType == "LSTM"
-    #nHid = Int(-0.5* (nVar + 1) + sqrt(0.25*(nVar + 1)^2 + 0.25*length(w)))
-    #nHid = Int(-0.125* (4*nVar + 5) + sqrt(0.25*(nVar)^2 + 0.625*nVar + (25/64) +0.25*length(w)))
-    nHid = Int(-0.125* (4*nVar + 5) + sqrt(0.25*(nVar)^2 + 0.625*nVar + (9/64) +0.25*length(w)))
-    dim1 = Int(nVar * nHid + nHid * nHid + nHid)
-    # Input Block
-    w1=reshape(w[1:nVar*nHid], nHid, nVar)
-    w2=reshape(w[nVar*nHid+1:nVar*nHid+nHid*nHid], nHid, nHid)
-    w3=reshape(w[nVar*nHid+nHid*nHid+1:dim1], nHid, 1)
-    # Input gate
-    w4=reshape(w[dim1+1:dim1+nVar*nHid], nHid, nVar)
-    w5=reshape(w[(dim1 + nVar * nHid +1):(dim1 + nVar * nHid + nHid * nHid)], nHid, nHid)
-    w6=reshape(w[dim1 + nVar * nHid + nHid*nHid+1:dim1*2], nHid, 1)
-    # Forget Gate
-    w7=reshape(w[dim1*2+1:dim1*2+nVar*nHid], nHid, nVar)
-    w8=reshape(w[(dim1*2 + nVar * nHid +1):(dim1*2 + nVar * nHid + nHid * nHid)], nHid, nHid)
-    w9=reshape(w[dim1*2 + nVar * nHid + nHid*nHid+1:dim1*3], nHid, 1)
-    # Output Gate
-    w10=reshape(w[dim1*3+1:dim1*3+nVar*nHid], nHid, nVar)
-    w11=reshape(w[(dim1*3 + nVar * nHid +1):(dim1*3 + nVar * nHid + nHid * nHid)], nHid, nHid)
-    w12=reshape(w[dim1*3 + nVar * nHid + nHid*nHid+1:dim1*4], nHid, 1)
-    # Hidden to Output weights and a small bias
-    w13=reshape(w[dim1*4+1:(dim1*4 + nHid)], 1, nHid)
-    w14=reshape(w[(dim1*4 + nHid + 1):(dim1*4 + nHid + 1)], 1, 1)
-
-    for s=1:nSamp
-      hidden = zeros(eltype(w[1]),1, nHid)
-      state = copy(hidden')
-      for i=1:nTimes
-          a = tanh(w1 * x[i:i, s, :]' + w2 * hidden' + w3)
-          igate = sigm(w4 * x[i:i, s, :]' + w5 * hidden' + w6)
-          fgate = sigm(w7 * x[i:i, s, :]' + w8 * hidden' + w9)
-          ogate = sigm(w10 * x[i:i, s, :]' + w11 * hidden' + w12)
-          state = a .* igate + fgate .* state
-          hidden = (tanh(state) .* ogate)'
-          ypred[i,s]=sigm(w13 * hidden' + w14)[1]
-      end
+  nHid = Int(-0.5*(nVar + 2) + sqrt(0.25*(nVar+2)^2-1+length(w)))
+  w1=reshape(w[1:nVar*nHid], nVar, nHid)
+  w2=reshape(w[nVar*nHid+1:nVar*nHid+nHid*nHid], nHid, nHid)
+  w3=reshape(w[nVar*nHid+nHid*nHid+1:nVar*nHid+nHid*nHid+nHid], nHid, 1)
+  w4=reshape(w[nVar*nHid+nHid*nHid+nHid+1:nVar*nHid+nHid*nHid+nHid+nHid], 1, nHid)
+  w5=reshape(w[nVar*nHid+nHid*nHid+nHid+nHid+1:nVar*nHid+nHid*nHid+nHid+nHid+1], 1)
+  for s=1:nSamp  ## could this loop be parallelized into say 100 parallel instances? Even a speed up factor 10 would make quite some diff
+    hidden = zeros(eltype(w[1]),1, nHid)
+    for i=1:nTimes
+      ## w[1] weights from input to hidden
+      ## w[2] weights hidden to hidden
+      ## w[3] weights hidden to output
+      ## w[4] bias to hidden
+      ## w[5] bias to output
+      hidden = sigm(x[i:i, s, :] * w1 + w4 + hidden * w2)
+      # ypred[i,s]=sigm(hidden * w3)[1] + w5[1]
+      ypred[i,s]=sigm(hidden * w3 + w5)[1]
     end
   end
   return ypred
@@ -188,7 +212,7 @@ derivActivation(y,dy) = y.*(1-y).*dy # Maybe this should be matrix mult of dh * 
 derivActivation!(dest,hidden,dh) = for j=1:length(hidden) dest[j]=hidden[j]*(1-hidden[j])*dh[j] end
 deriv(::typeof(mseLoss),ytrue,ypred)=ytrue-ypred
 deriv(::typeof(mseLoss_old),ytrue,ypred)=ytrue-ypred
-function Knet.sigm(xi::Number)
+function sigm(xi::Number)
   if xi>=0
     z=exp(-xi)
     return one(xi)/(one(xi)+z)
@@ -308,45 +332,59 @@ end
 
 ### for 1/sqrt(n) rule of thumb cf. http://www.wildml.com/2015/09/recurrent-neural-networks-tutorial-part-2-implementing-a-language-model-rnn-with-python-numpy-and-theano/
 
-function iniWeights(nVarX::Int=3, nHid::Int=12, rnnType="RNN")
-    if rnnType=="RNN"
-              weights = -1.0 .+ 2.0 .*
-        [rand_flt(-1./sqrt(nVarX), 1./sqrt(nVarX), nVarX, nHid),  ## Input to hidden
-            rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid,nHid),  ## HIdden to hidden
-            rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid, 1), ## Hidden to output
-            0.0 * rand(Float64, 1, nHid),  ## Bias to hidden initialized to zero
-            0.0 * rand(Float64, 1)] ## bias to output to zero
-        weights=raggedToVector(weights)
-    elseif rnnType=="LSTM"
-      weights = -1.0 + 2.0 .*
-      [rand_flt(-1./sqrt(nVarX), 1./sqrt(nVarX), nHid, nVarX),  ## Input block
-          rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid,nHid),
-          rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid, 1),
-          rand_flt(-1./sqrt(nVarX), 1./sqrt(nVarX), nHid, nVarX),  ## Input gate
-          rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid,nHid),
-          rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid, 1),
-          rand_flt(-1./sqrt(nVarX), 1./sqrt(nVarX), nHid, nVarX),  ## Forget Gate
-          rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid,nHid),
-          rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid, 1),
-          rand_flt(-1./sqrt(nVarX), 1./sqrt(nVarX), nHid, nVarX),  ## Output Gate
-          rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid,nHid),
-          rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid, 1),
-          0.0 * rand(Float64, 1, nHid), ## Linear activation weights
-          0.0 * rand(Float64, 1)] ## Linear activation bias
-      weights=raggedToVector(weights)
-    end
-    return weights
+function iniWeights(::Type{RNNModel},nVarX::Int=3, nHid::Int=12)
+  weights = -1.0 .+ 2.0 .*
+  [rand_flt(-1./sqrt(nVarX), 1./sqrt(nVarX), nVarX, nHid),  ## Input to hidden
+  rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid,nHid),  ## HIdden to hidden
+  rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid, 1), ## Hidden to output
+  0.0 * rand(Float64, 1, nHid),  ## Bias to hidden initialized to zero
+  0.0 * rand(Float64, 1)] ## bias to output to zero
+  weights=raggedToVector(weights)
 end
 
-function RNNModel(nVar,nHid, rnnType = "RNN")
-  w=iniWeights(nVar,nHid, rnnType)
-  if rnnType == "RNN"
-    totalNweights=nVar*nHid + nHid * nHid + 2*nHid + 1
-  elseif rnnType == "LSTM"
-    totalNweights=4*(nVar * nHid + nHid * nHid + nHid) + nHid + 1
-  end
+function iniWeights(::Type{LSTMModel},nVarX::Int=3, nHid::Int=12)
+  weights = -1.0 + 2.0 .*
+  [rand_flt(-1./sqrt(nVarX), 1./sqrt(nVarX), nHid, nVarX),  ## Input block
+  rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid,nHid),
+  rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid, 1),
+  rand_flt(-1./sqrt(nVarX), 1./sqrt(nVarX), nHid, nVarX),  ## Input gate
+  rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid,nHid),
+  rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid, 1),
+  rand_flt(-1./sqrt(nVarX), 1./sqrt(nVarX), nHid, nVarX),  ## Forget Gate
+  rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid,nHid),
+  rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid, 1),
+  rand_flt(-1./sqrt(nVarX), 1./sqrt(nVarX), nHid, nVarX),  ## Output Gate
+  rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid,nHid),
+  rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid, 1),
+  0.0 * rand(Float64, 1, nHid), ## Linear activation weights
+  0.0 * rand(Float64, 1)] ## Linear activation bias
+  weights=raggedToVector(weights)
+end
+
+function RNNModel(nVar,nHid)
+  w=iniWeights(RNNModel,nVar,nHid)
+  totalNweights=nVar*nHid + nHid * nHid + 2*nHid + 1
   length(w) == totalNweights ||  error("Length of weights $(size(weights,1)) does not match needed length $totalNweights!")
-  RNNModel(w,nHid,0,identity,Int[],Float64[],Float64[],NaN,NaN,zeros(0,0,0),zeros(0,0,0),Tuple{Float64,Float64}[], rnnType)
+  RNNModel(w,nHid,0,identity,Int[],Float64[],Float64[],NaN,NaN,zeros(0,0,0),zeros(0,0,0),Tuple{Float64,Float64}[])
+end
+
+function LSTMModel(nVar,nHid)
+  w=iniWeights(LSTMModel,nVar,nHid)
+  totalNweights=4*(nVar * nHid + nHid * nHid + nHid) + nHid + 1
+  length(w) == totalNweights ||  error("Length of weights $(size(weights,1)) does not match needed length $totalNweights!")
+  LSTMModel(w,nHid,0,identity,Int[],Float64[],Float64[],NaN,NaN,zeros(0,0,0),zeros(0,0,0),Tuple{Float64,Float64}[])
+end
+
+function normalize_data(x,y)
+  yMin, yMax = extrema(y)
+  yNorm=(y-yMin)/(yMax-yMin)
+  ### Normalize x to -1, 1 per Variable (not necessarily the best way to do it....)
+  xEx=vec(extrema(x, [1,2]))
+  xNorm=copy(x)
+  for v in 1:size(xEx,1);
+      xNorm[:,:,v] = 2.0.* ((x[:,:,v]-xEx[v][1])/(xEx[v][2]-xEx[v][1])-0.5)
+  end
+  xNorm,yNorm,yMin,yMax,xEx
 end
 
 #Training:
@@ -372,9 +410,7 @@ function train_net(
 	### How many to plot in MOD vs OBS scatter plot
 	nPlotsample=2000
     )
-    if model.rnnType == "LSTM"
-      lossFunc = mseLoss_old
-    end
+
     nTimes, nSamp, nVarX=size(x)
 
     lossesTrain = model.lossesTrain
@@ -384,20 +420,11 @@ function train_net(
     ## Define the used loss-Function based on the method to predict and the function defining how the predictions
     ## are compared with the data (default is Mean Squared Error across sequences)
     loss(w, x, y)=lossFunc(w, x, y, model)
-    lossgradient=grad(loss)
+    #lossgradient=grad(loss)
 
     ### Normalize y to 0,1
-    yMin, yMax = extrema(y)
-    yNorm=(y-yMin)/(yMax-yMin)
-    ### Normalize x to -1, 1 per Variable (not necessarily the best way to do it....)
-    xEx=vec(extrema(x, [1,2]))
-    xNorm=copy(x)
-    for v in 1:size(xEx,1);
-        xNorm[:,:,v] = 2.0.* ((x[:,:,v]-xEx[v][1])/(xEx[v][2]-xEx[v][1])-0.5)
-    end
-    model.yNorm, model.xNorm = yNorm, xNorm
-    model.yMin, model.yMax, model.xEx = yMin, yMax, xEx
-
+    xNorm,yNorm,yMin,yMax,xEx = normalize_data(x,y)
+    model.xNorm,model.yNorm,model.yMin,model.yMax,model.xEx = xNorm,yNorm,yMin,yMax,xEx
     ## Split data set for cross-validation
     ## Could be parameterized in the function call later!!
     ## Also missing a full k-fold crossvalidation
@@ -433,20 +460,12 @@ function train_net(
     push!(lossesTrain,loss(w, xNorm[:, trainIdx,:], yNorm[:, trainIdx, :]))
     push!(lossesVali,loss(w, xNorm[:, valiIdx,:], yNorm[:, valiIdx, :]))
     push!(outputtimesteps,isempty(outputtimesteps) ? 1 : outputtimesteps[end]+1)
-    if model.rnnType == "LSTM"
-      curPredAll=predict_old(model, w, xNorm)
-    else
-      curPredAll=predict(model, w, xNorm)
-    end
+    curPredAll=predict(model, w, xNorm)
     info("Before training loss, Training set: ", lossesTrain[end], " Validation: ", lossesVali[end])
 
-    irsig=Signal(false)
 
     ### Just for plotting performace selec not too many points (otherwise my notebook freezes etc)
     if plotProgress
-
-      cb=checkbox(label="Interrupt",signal=irsig)
-      display(cb)
 
       plotSampleTrain = sample(1:length(yNorm[:, trainIdx, :]), min(nPlotsample,length(yNorm[:, trainIdx, :])) , replace=false)
       plotSampleVali = sample(1:length(yNorm[:, valiIdx, :]), min(nPlotsample,length(yNorm[:, valiIdx, :])) , replace=false)
@@ -458,19 +477,13 @@ function train_net(
 
     for i=1:nEpoch
 
-        value(irsig) && break
         ### Batch approach: cylce randomly through subset of samples (==> more stochasticitym better performance (in theory))
         ### I don't understand why the performance does not get much better with smaller batches
         nTrSamp = length(trainIdx)
         batchIdx=sample(1:nTrSamp,batchSize, replace=false)
         ### Calc the loss gradient dloss/dw based on the current weight vector and the sample
         ### This is done here with the predef Adagrad method. Could be done explicitely to speed up
-        if model.rnnType == "LSTM"
-          dw = predict_with_gradient_lstm(model,model.weights,xNorm[:,trainIdx[batchIdx] ,:], yNorm[:, trainIdx[batchIdx],:],lossFunc)
-          #dw = lossgradient(w, xNorm[:,trainIdx[batchIdx] ,:], yNorm[:, trainIdx[batchIdx],:])
-        else
-          dw = predict_with_gradient(model,model.weights,xNorm[:,trainIdx[batchIdx] ,:], yNorm[:, trainIdx[batchIdx],:],lossFunc)
-        end
+        dw = predict_with_gradient(model,model.weights,xNorm[:,trainIdx[batchIdx] ,:], yNorm[:, trainIdx[batchIdx],:],lossFunc)
         ### Update w according to loss gradient and algorithm (incl, parameters therein)
         w, params = update!(w, dw, searchParams)
 
@@ -491,11 +504,7 @@ function train_net(
             if plotProgress
               latestStart=outputtimesteps[end] - minimum([trunc(Int,outputtimesteps[end]*0.66) 1000])
               subTS=findfirst(i->i>=latestStart,outputtimesteps):length(outputtimesteps)
-              if model.rnnType == "LSTM"
-                curPredAll=predict_old(model,w, xNorm)
-              else
-                curPredAll=predict(model,w, xNorm)
-              end
+              curPredAll=predict(model,w, xNorm)
               p[1]=(outputtimesteps,lossesTrain)
               p[2]=(vec(curPredAll[:,valiIdx,:])[plotSampleVali],vec(yNorm[:,valiIdx,:])[plotSampleVali])
               p[3]=(outputtimesteps[subTS],lossesTrain[subTS])
@@ -521,11 +530,7 @@ function predict_after_train(model::FluxModel, x)
     for v in 1:size(model.xEx,1);
        xNorm[:,:,v] = 2.0.* ((x[:,:,v]-model.xEx[v][1])/(model.xEx[v][2]-model.xEx[v][1])-0.5)
     end
-    if model.rnnType == "LSTM"
-      yNorm = predict_old(model,model.weights, xNorm)
-    else
-      yNorm = predict(model,model.weights, xNorm)
-    end
+    yNorm = predict_old(model,model.weights, xNorm)
     yPred = yNorm .* (model.yMax-model.yMin) .+ model.yMin
 
     return yPred
@@ -546,31 +551,18 @@ function raggedToVector(raggedArray)
     return ragged_as_Vector
 end
 
-function predict_with_gradient_lstm(::RNNModel,w, x,ytrue,lossFunc) ### This implements w as a vector
+
+
+function predict_with_gradient(::LSTMModel,w, x,ytrue,lossFunc) ### This implements w as a vector
   nTimes, nSamp, nVar = size(x)
   ypred=Array{typeof(w[1])}(nTimes, nSamp)
 
   nHid = Int(-0.125* (4*nVar + 5) + sqrt(0.25*(nVar)^2 + 0.625*nVar + (9/64) +0.25*length(w)))
   dim1 = Int(nVar * nHid + nHid * nHid + nHid)
   # Input Block
-  w1=reshape(w[1:nVar*nHid], nHid, nVar)
-  w2=reshape(w[nVar*nHid+1:nVar*nHid+nHid*nHid], nHid, nHid)
-  w3=reshape(w[nVar*nHid+nHid*nHid+1:dim1], nHid, 1)
-  # Input gate
-  w4=reshape(w[dim1+1:dim1+nVar*nHid], nHid, nVar)
-  w5=reshape(w[(dim1 + nVar * nHid +1):(dim1 + nVar * nHid + nHid * nHid)], nHid, nHid)
-  w6=reshape(w[dim1 + nVar * nHid + nHid*nHid+1:dim1*2], nHid, 1)
-  # Forget Gate
-  w7=reshape(w[dim1*2+1:dim1*2+nVar*nHid], nHid, nVar)
-  w8=reshape(w[(dim1*2 + nVar * nHid +1):(dim1*2 + nVar * nHid + nHid * nHid)], nHid, nHid)
-  w9=reshape(w[dim1*2 + nVar * nHid + nHid*nHid+1:dim1*3], nHid, 1)
-  # Output Gate
-  w10=reshape(w[dim1*3+1:dim1*3+nVar*nHid], nHid, nVar)
-  w11=reshape(w[(dim1*3 + nVar * nHid +1):(dim1*3 + nVar * nHid + nHid * nHid)], nHid, nHid)
-  w12=reshape(w[dim1*3 + nVar * nHid + nHid*nHid+1:dim1*4], nHid, 1)
-  # Hidden to Output weights and a small bias
-  w13=reshape(w[dim1*4+1:(dim1*4 + nHid)], 1, nHid)
-  w14=reshape(w[(dim1*4 + nHid + 1):(dim1*4 + nHid + 1)], 1, 1)
+  @reshape_weights(w1=>(nHid,nVar),w2=>(nHid,nHid),w3=>(nHid,1),w4=>(nHid,nVar),w5=>(nHid,nHid),
+    w6=>(nHid,1),w7=>(nHid,nVar),w8=>(nHid,nHid),w9=>(nHid,1),w10=>(nHid,nVar),w11=>(nHid,nHid),
+    w12=>(nHid,1),w13=>(1,nHid),w14=>(1,1))
 
   # Allocate additional arrays for derivative calculation
   dw1, dw4, dw7, dw10 = [zeros(size(w1)) for i=1:nSamp], [zeros(size(w4)) for i=1:nSamp], [zeros(size(w7)) for i=1:nSamp], [zeros(size(w10)) for i=1:nSamp]
@@ -606,28 +598,33 @@ function predict_with_gradient_lstm(::RNNModel,w, x,ytrue,lossFunc) ### This imp
 
       dOut = w13' * dy2 + w2' * dInput[i+1,:] + w5' * dIgate[i+1,:] + w8' * dFgate[i+1,:] + w11' * dOgate[i+1,:]
       dState = dOut .* ogate[i,:] .* (1 - tanh(state[i+1,:]) .* tanh(state[i+1,:])) + dState .* fgate[i+1,:]
-      dInput[i,:] = dState .* igate[i,:] .* (1 - input[i,:] .* input[i,:])
-      dIgate[i,:] = dState .* input[i,:] .* igate[i,:] .* (1 - igate[i,:])
-      dFgate[i,:] = dState .* state[i,:] .* fgate[i,:] .* (1 - fgate[i,:])
-      dOgate[i,:] = dOut .* tanh(state[i+1,:]) .* ogate[i,:] .* (1 - ogate[i,:])
-
+      for j=1:nHid
+        dInput[i,j] = dState[j] * igate[i,j] * (1 - input[i,j] * input[i,j])
+        dIgate[i,j] = dState[j] * input[i,j] * igate[i,j] * (1 - igate[i,j])
+        dFgate[i,j] = dState[j] * state[i,j] * fgate[i,j] * (1 - fgate[i,j])
+        dOgate[i,j] = dOut[j] * tanh(state[i+1,j]) * ogate[i,j] * (1 - ogate[i,j])
+      end
       # Update input weights
-      dw1[s] += dInput[i, :] * x[i:i, s, :]
-      dw4[s] += dIgate[i, :] * x[i:i, s, :]
-      dw7[s] += dFgate[i, :] * x[i:i, s, :]
-      dw10[s] += dOgate[i, :] * x[i:i, s, :]
+      xslice = x[i:i, s, :]
+      gemm!('N','N',1.0,dInput[i, :],xslice,1.0,dw1[s])
+      gemm!('N','N',1.0,dIgate[i, :],xslice,1.0,dw4[s])
+      gemm!('N','N',1.0,dFgate[i, :],xslice,1.0,dw7[s])
+      gemm!('N','N',1.0,dOgate[i, :],xslice,1.0,dw10[s])
       # Update hidden weights
       if i<nTimes
-        dw2[s] += dInput[i+1,:] *  out[i+1,:]'
-        dw5[s] += dIgate[i+1,:] *  out[i+1,:]'
-        dw8[s] += dFgate[i+1,:] *  out[i+1,:]'
-        dw11[s] += dOgate[i+1,:] *  out[i+1,:]'
+        outslice = out[i+1,:]
+        gemm!('N','T',1.0,dInput[i+1,:],outslice,1.0,dw2[s])
+        gemm!('N','T',1.0,dIgate[i+1,:],outslice,1.0,dw5[s])
+        gemm!('N','T',1.0,dFgate[i+1,:],outslice,1.0,dw8[s])
+        gemm!('N','T',1.0,dOgate[i+1,:],outslice,1.0,dw11[s])
       end
       # Update biases
-      dw3[s] += dInput[i+1,:]
-      dw6[s] += dIgate[i+1,:]
-      dw9[s] += dFgate[i+1,:]
-      dw12[s] += dOgate[i+1,:]
+      for j=1:nHid
+        dw3[s][j] += dInput[i+1,j]
+        dw6[s][j] += dIgate[i+1,j]
+        dw9[s][j] += dFgate[i+1,j]
+        dw12[s][j] += dOgate[i+1,j]
+      end
     end
 
   end

@@ -1,1 +1,6 @@
 julia 0.5
+Plots
+Knet
+Compat
+Interact
+FixedSizeArrays

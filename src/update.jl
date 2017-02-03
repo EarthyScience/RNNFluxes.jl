@@ -5,7 +5,7 @@ import Base: At_mul_Bt, At_mul_Bt!, Ac_mul_Bc, Ac_mul_Bc!
 import Base.LinAlg.BLAS: gemm!
 import Base.LinAlg: axpy!
 using Plots
-using Knet
+#using Knet
 
 
 type Sgd
