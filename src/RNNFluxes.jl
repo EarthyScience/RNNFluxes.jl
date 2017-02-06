@@ -5,7 +5,9 @@ using Interact
 
 include("update.jl")
 include("plotProgress.jl")
-include("rnn.jl")
+include("train.jl")
+include("RNN.jl")
+include("LSTM.jl")
 include("testdata.jl")
 
 
