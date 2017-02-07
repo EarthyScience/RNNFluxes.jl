@@ -1,3 +1,5 @@
+import Base.LinAlg: gemv!
+
 """
     type LSTM
 
@@ -57,6 +59,44 @@ function predict(model::LSTMModel,w,x)
   ypred
 end
 
+#gemv!(tA, alpha, A, x, beta, y)
+#Update the vector y as alpha*A*x + beta*y or alpha*A'x + beta*y according to tA (transpose A). Returns the updated y.
+macro chain_matmulv_add(ex)
+  ex.head==:(.=) || error("Wrong format. Input expression must be assignment with .=")
+  outAr = ex.args[1]
+  ex = ex.args[2]
+  (ex.head==:call && ex.args[1]==:(+)) || error("Wrong input format, right-hand side must be a sum")
+  outEx = quote end
+  for a in ex.args[2:end]
+    if isa(a,Symbol)
+      push!(outEx.args,:(vec_add!($outAr,$a)))
+    elseif a.head==:call && a.args[1]==:(*)
+      matsym = a.args[2]
+      t='N'
+      if isa(matsym,Expr)
+        t='T'
+        matsym=matsym.args[1]
+      end
+      vecsym = a.args[3]
+      push!(outEx.args,:(gemv!($t,1.0,$matsym,$vecsym,1.0,$outAr)))
+    else
+      error("Unknown operand")
+    end
+  end
+  outEx
+end
+
+macroexpand(:(@chain_matmulv_add dOut.=w1*x+w2*y+w3'*z+w4))
+
+"Adds vectors a and b and stores the result in a"
+function vec_add!(a,b)
+  length(a) == length(b) || error("Lengths of a and b differ")
+  @inbounds for i=1:length(a)
+    a[i]=a[i]+b[i]
+  end
+  a
+end
+
 function predict_with_gradient(model::LSTMModel,w, x,ytrue,lossFunc) ### This implements w as a vector
   nSamp = length(x)
 
@@ -76,46 +116,50 @@ function predict_with_gradient(model::LSTMModel,w, x,ytrue,lossFunc) ### This im
   foreach(x,ytrue,1:nSamp) do xx,yy,s
     nTimes = size(xx,2)
     ypred  = zeros(nTimes)
-    out, state = zeros(nTimes + 1, nHid), zeros(nTimes + 1, nHid)
-    dState, dOut  = zeros(nHid,1), zeros(nHid,1)
+    out, state = [zeros(nHid) for i = 1:nTimes+1], [zeros(nHid) for i=1:nTimes+1]
+    dState, dOut  = zeros(nHid,1), zeros(nHid)
+    xHelp         = zeros(nHid)
     dInput, dIgate, dFgate, dOgate = [zeros(nHid) for i=1:nTimes+1], [zeros(nHid) for i=1:nTimes+1], [zeros(nHid) for i=1:nTimes+1], [zeros(nHid) for i=1:nTimes+1]
-    input, igate, fgate, ogate = Array{Float64}(nTimes, nHid),Array{Float64}(nTimes, nHid),zeros(nTimes+1, nHid),Array{Float64}(nTimes, nHid)
+    input, igate, fgate, ogate = [zeros(nHid) for i=1:nTimes],[zeros(nHid) for i=1:nTimes],[zeros(nHid) for i=1:nTimes+1],[zeros(nHid) for i=1:nTimes]
 
     for i=1:nTimes
-        xslice       = xx[:,i:i]
-        outslice     = out[i,:]
-        input[i,:]   = tanh(w1 * xslice + w2 * outslice + w3)
-        igate[i,:]   = sigm(w4 * xslice + w5 * outslice + w6)
-        fgate[i,:]   = sigm(w7 * xslice + w8 * outslice + w9)
-        ogate[i ,:]  = sigm(w10 * xslice + w11 * outslice + w12)
-        state[i+1,:] = input[i ,:] .* igate[i ,:] + fgate[i ,:] .* state[i ,:]
-        out[i+1,:]   = tanh(state[i+1 ,:]) .* ogate[i ,:]
-        ypred[i]     = sigm(w13 * out[i+1,:] + w14)[1]
+        xslice      = xx[:,i]
+        @chain_matmulv_add(xHelp.=w1  * xslice + w2  * out[i] + w3 ); map!(tanh,input[i],xHelp); fill!(xHelp,0.0)
+        @chain_matmulv_add(xHelp.=w4  * xslice + w5  * out[i] + w6 ); map!(sigm,igate[i],xHelp); fill!(xHelp,0.0)
+        @chain_matmulv_add(xHelp.=w7  * xslice + w8  * out[i] + w9 ); map!(sigm,fgate[i],xHelp); fill!(xHelp,0.0)
+        @chain_matmulv_add(xHelp.=w10 * xslice + w11 * out[i] + w12); map!(sigm,ogate[i],xHelp); fill!(xHelp,0.0)
+        input1,igate1,fgate1,ogate1,state1,out2,state2 = input[i],igate[i],fgate[i],ogate[i],state[i],out[i+1],state[i+1]
+        @inbounds for j=1:nHid
+          state2[j] = input1[j] * igate1[j] + fgate1[j] * state1[j]
+          out2[j]   = tanh(state2[j]) * ogate1[j]
+        end
+        ypred[i]    = sigm(dot(w13,out[i+1]) + w14[1])
     end
 
     dInput1, dIgate1,dFgate1,dOgate1 = dInput[nTimes+1],dIgate[nTimes+1],dFgate[nTimes+1],dOgate[nTimes+1]
+
     # Run the derivative backward pass
     for i=nTimes:-1:1
 
       # Derivative of the loss function
       dy = deriv(lossFunc,yy[i],ypred[i])
       # Derivative of the activations function (still a scalar)
-      dy2 = derivActivation(ypred[i],dy)
-      dw13[s] += dy2 * out[i+1,:]'
-      dw14[s][1] += dy2
+      dy2 = [derivActivation(ypred[i],dy)]
+      dw13[s] += dy2[1] * out[i+1]'
+      dw14[s][1] += dy2[1]
 
-      dOut = w13' * dy2 + w2' * dInput1 + w5' * dIgate1 + w8' * dFgate1 + w11' * dOgate1 ## Most important line
+      @chain_matmulv_add(dOut .= w13' * dy2 + w2' * dInput1 + w5' * dIgate1 + w8' * dFgate1 + w11' * dOgate1) ## Most important line
 
       # Update hidden weights
       if i<nTimes
-        outslice = out[i+1,:]
+        outslice = out[i+1]
         gemm!('N','T',1.0,dInput1,outslice,1.0,dw2[s])
         gemm!('N','T',1.0,dIgate1,outslice,1.0,dw5[s])
         gemm!('N','T',1.0,dFgate1,outslice,1.0,dw8[s])
         gemm!('N','T',1.0,dOgate1,outslice,1.0,dw11[s])
       end
       # Update biases
-      for j=1:nHid
+      @inbounds for j=1:nHid
         dw3[s][j] += dInput1[j]
         dw6[s][j] += dIgate1[j]
         dw9[s][j] += dFgate1[j]
@@ -123,13 +167,18 @@ function predict_with_gradient(model::LSTMModel,w, x,ytrue,lossFunc) ### This im
       end
 
       dInput1, dIgate1,dFgate1,dOgate1 = dInput[i], dIgate[i], dFgate[i], dOgate[i]
+      input1,   igate1, fgate1, ogate1 =  input[i],  igate[i],  fgate[i],  ogate[i]
+      state2,fgate2 = state[i+1], fgate[i+1]
 
-      dState = dOut .* ogate[i,:] .* (1 - tanh(state[i+1,:]) .* tanh(state[i+1,:])) + dState .* fgate[i+1,:]     ## Also very important
-      for j=1:nHid
-        dInput1[j] = dState[j] * igate[i,j] * (1 - input[i,j] * input[i,j])
-        dIgate1[j] = dState[j] * input[i,j] * igate[i,j] * (1 - igate[i,j])
-        dFgate1[j] = dState[j] * state[i,j] * fgate[i,j] * (1 - fgate[i,j])
-        dOgate1[j] = dOut[j] * tanh(state[i+1,j]) * ogate[i,j] * (1 - ogate[i,j])
+      #map!((dO,og,st,dS,fg)->dO * og * (1-tanh(st)) * tanh(st) + dS * fg,dState,dOut,ogate1,state[i+1],dState,fgate[i+1])
+      @inbounds for j=1:nHid
+        dState[j] = dOut[j] * ogate1[j] * (1 - tanh(state2[j]) * tanh(state2[j])) + dState[j] * fgate2[j]
+      end     ## Also very important
+      @inbounds for j=1:nHid
+        dInput1[j] = dState[j] * igate1[j] * (1 - input1[j] * input1[j])
+        dIgate1[j] = dState[j] * input1[j] * igate1[j] * (1 - igate1[j])
+        dFgate1[j] = dState[j] * state[i][j] * fgate1[j] * (1 - fgate1[j])
+        dOgate1[j] = dOut[j] * tanh(state[i+1][j]) * ogate1[j] * (1 - ogate1[j])
       end
       # Update input weights
       xslice = xx[:,i:i]

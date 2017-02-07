@@ -134,7 +134,7 @@ function train_net(
         ### Batch approach: cylce randomly through subset of samples (==> more stochasticitym better performance (in theory))
         ### I don't understand why the performance does not get much better with smaller batches
         nTrSamp = length(trainIdx)
-        batchIdx=sample(1:nTrSamp,batchSize, replace=false)
+        batchIdx= sample(1:nTrSamp,batchSize, replace=false)
         ### Calc the loss gradient dloss/dw based on the current weight vector and the sample
         ### This is done here with the predef Adagrad method. Could be done explicitely to speed up
         dw = predict_with_gradient(model,model.weights,xTrain[batchIdx], yTrain[batchIdx],lossFunc)
