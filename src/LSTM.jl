@@ -148,6 +148,7 @@ function predict_with_gradient(model::LSTMModel,w, x,ytrue,lossFunc) ### This im
       dw13[s] += dy2[1] * out[i+1]'
       dw14[s][1] += dy2[1]
 
+      dOut[:]=0.0
       @chain_matmulv_add(dOut .= w13' * dy2 + w2' * dInput1 + w5' * dIgate1 + w8' * dFgate1 + w11' * dOgate1) ## Most important line
 
       # Update hidden weights
