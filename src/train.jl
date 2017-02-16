@@ -88,8 +88,8 @@ function train_net(
     loss(w, x, y)=lossFunc(w, x, y, model)
 
     ### Normalize y to 0,1
-    xNorm,xMin,xMax = normalize_data(x)
-    yNorm,yMin,yMax = normalize_data(y)
+    xNorm,xMin,xMax = normalize_data(x,-1.0,1.0)
+    yNorm,yMin,yMax = normalize_data(y,0.0,1.0)
     model.xNorm,model.yNorm,model.yMin,model.yMax,model.xMin,model.xMax = xNorm,yNorm,yMin[1],yMax[1],xMin,xMax
     ## Split data set for cross-validation
     ## Could be parameterized in the function call later!!
@@ -117,7 +117,7 @@ function train_net(
     if plotProgress
 
       plotSampleTrain = sampleRagged(yTrain,nPlotsample)
-      plotSampleVali  = sampleRagged(xVali,nPlotsample)
+      plotSampleVali  = sampleRagged(yVali,nPlotsample)
 
       predTrain       = curPredAll[trainIdx]
       predVali        = curPredAll[valiIdx]
@@ -189,24 +189,33 @@ function predict_after_train(model::FluxModel, x)
     return yPred
 end
 
-function normalize_data(x)
-  xMax=maximum(hcat(maximum.(x,2)...),2)[:]
-  xMin=minimum(hcat(minimum.(x,2)...),2)[:]
+function normalize_data(x,newmin,newmax)
+  xall=hcat(x...)
+  xMin,xMax=zeros(size(xall,1)),zeros(size(xall,1))
+  for i=1:size(xall,1)
+    xv = xall[i,:]
+    xMin[i],xMax[i]=minimum(xv[!isnan(xv)]),maximum(xv[!isnan(xv)])
+  end
   xNorm=deepcopy(x)
   for (xx,xxNorm) in zip(x,xNorm)
     for j in 1:size(xx,2), v in 1:size(xx,1)
-      xxNorm[v,j] = 2.0.* ((xx[v,j]-xMin[v])/(xMax[v]-xMin[v])-0.5)
+      xxNorm[v,j] = (newmax-newmin).* ((xx[v,j]-xMin[v])/(xMax[v]-xMin[v]))+newmin
     end
   end
   xNorm,xMin,xMax
 end
 
 function sampleRagged{T}(x::Vector{Matrix{T}},nsample)
-    nel = map(i->Float64(size(i,2)),x)
+    nel = map(i->Float64(length(i)-sum(isnan,i)),x)
     sum(nel) < nsample && (nsample=round(Int,sum(nel)))
     isamp = sample(collect(1:length(x)),WeightVec(nel),nsample,replace=true)
-    its   = map(i->rand(1:size(x[i],2)),isamp)
-    return [(isamp[i],its[i]) for i=1:length(its)]
+    its   = map(i->rand(1:(length(x[i])-sum(isnan,x[i]))),isamp)
+    goodvals = map(i->find(map(j->!isnan(j),i)),x)
+    its2  = copy(its)
+    for i=1:length(its)
+      its2[i] = goodvals[isamp[i]][its[i]]
+    end
+    return [(isamp[i],its2[i]) for i=1:length(its)]
 end
 
 @noinline function extractRaggedSample(ragged_a,samp)
