@@ -47,12 +47,11 @@ end
 ### Random number from a range [min, max) -- Fabian, ok like this???
 import Distributions: Uniform, Normal
 function rand_flt(scale::Number, dist, dims...)
-  if dist == "uniform" || dist == "old"
-    return rand(Uniform(-scale, scale), dims...)
-  elseif dist == "normal"
-    return rand(Normal(0, scale), dims...)
-  end
+  rand(getDist(dist,scale),dims...)
 end
+getDist(::Type{Uniform},scale)=Uniform(-scale,scale)
+getDist(::Type{Normal},scale)=Normal(0.0,scale)
+
 ### for 1/sqrt(n) rule of thumb cf. http://www.wildml.com/2015/09/recurrent-neural-networks-tutorial-part-2-implementing-a-language-model-rnn-with-python-numpy-and-theano/
 
 #Training:
