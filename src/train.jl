@@ -45,11 +45,14 @@ function sigm(xi::Number)
 end
 
 ### Random number from a range [min, max) -- Fabian, ok like this???
-import Distributions: Uniform
-function rand_flt(min::Number, max::Number, dims...)
-    return rand(Uniform(min,max),dims...)
+import Distributions: Uniform, Normal
+function rand_flt(scale::Number, dist, dims...)
+  if dist == "uniform" || dist == "old"
+    return rand(Uniform(-scale, scale), dims...)
+  elseif dist == "normal"
+    return rand(Normal(0, scale), dims...)
+  end
 end
-
 ### for 1/sqrt(n) rule of thumb cf. http://www.wildml.com/2015/09/recurrent-neural-networks-tutorial-part-2-implementing-a-language-model-rnn-with-python-numpy-and-theano/
 
 #Training:
