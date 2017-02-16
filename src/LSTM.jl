@@ -23,7 +23,7 @@ type LSTMModel <: FluxModel
 end
 
 function LSTMModel(nVar,nHid; dist = Uniform, forgetBias = 1)
-  w=iniWeights(LSTMModel,nVar,nHid, dist=dist, forgetBias=forgetBias)
+  w=iniWeights(LSTMModel, nVar, nHid, dist, forgetBias)
   totalNweights=4*(nVar * nHid + nHid * nHid + nHid) + nHid + 1
   length(w) == totalNweights ||  error("Length of weights $(size(weights,1)) does not match needed length $totalNweights!")
   LSTMModel(w,nHid,0,identity,Int[],Float64[],Float64[],NaN,NaN,[zeros(0,0)],[zeros(0,0)],Float64[],Float64[])
@@ -199,7 +199,7 @@ function predict_with_gradient(model::LSTMModel,w, x,ytrue,lossFunc) ### This im
   #return -[reshape(sum(dWxh), nVar*nHid ); reshape(sum(dWhh), nHid*nHid) ; reshape(sum(dWhy),nHid) ; reshape(sum(dbh),nHid) ; reshape(sum(dby),1)]
 end
 
-function iniWeights(::Type{LSTMModel}, nVarX::Int=3, nHid::Int=12, dist, forgetBias)
+function iniWeights(::Type{LSTMModel}, nVarX::Int=3, nHid::Int=12, dist = Uniform, forgetBias = 1)
   weights = [rand_flt(1./sqrt(nVarX), dist, nHid, nVarX),  ## Input block
   rand_flt(1./sqrt(nHid), dist, nHid, nHid),
   rand_flt(1./sqrt(nHid), dist, nHid, 1),
@@ -218,16 +218,16 @@ function iniWeights(::Type{LSTMModel}, nVarX::Int=3, nHid::Int=12, dist, forgetB
     weights = -1.0 + 2.0 .*
       [rand_flt(1./sqrt(nVarX), Uniform, nHid, nVarX),  ## Input block
       rand_flt(1./sqrt(nHid), Uniform, nHid,nHid),
-      rand_flt(1./sqrt(nHid), dist, nHid, 1),
-      rand_flt(1./sqrt(nVarX), dist, nHid, nVarX),  ## Input gate
-      rand_flt(1./sqrt(nHid),  dist,nHid,nHid),
-      rand_flt(1./sqrt(nHid), dist,  nHid, 1),
-      rand_flt(1./sqrt(nVarX), dist, nHid, nVarX),  ## Forget Gate
-      rand_flt(1./sqrt(nHid), dist, nHid,nHid),
-      rand_flt(1./sqrt(nHid), dist, nHid, 1),
-      rand_flt(1./sqrt(nVarX), dist, nHid, nVarX),  ## Output Gate
-      rand_flt(1./sqrt(nHid), dist, nHid,nHid),
-      rand_flt(1./sqrt(nHid), dist, nHid, 1),
+      rand_flt(1./sqrt(nHid), Uniform, nHid, 1),
+      rand_flt(1./sqrt(nVarX), Uniform, nHid, nVarX),  ## Input gate
+      rand_flt(1./sqrt(nHid),  Uniform,nHid,nHid),
+      rand_flt(1./sqrt(nHid), Uniform,  nHid, 1),
+      rand_flt(1./sqrt(nVarX), Uniform, nHid, nVarX),  ## Forget Gate
+      rand_flt(1./sqrt(nHid), Uniform, nHid,nHid),
+      rand_flt(1./sqrt(nHid), Uniform, nHid, 1),
+      rand_flt(1./sqrt(nVarX), Uniform, nHid, nVarX),  ## Output Gate
+      rand_flt(1./sqrt(nHid), Uniform, nHid,nHid),
+      rand_flt(1./sqrt(nHid), Uniform, nHid, 1),
       0.0 * rand(Float64, 1, nHid), ## Linear activation weights
       0.0 * rand(Float64, 1)] ## Linear activation bias
   end

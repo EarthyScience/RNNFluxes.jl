@@ -44,7 +44,7 @@ Define some network parameters and construct an `RNNModel` while specifying the 
 ````julia
 nVarX = 3 # NUmber of input variables
 nHid  = 30        # Number of hidden nodes
-m     = RNNFluxes.LSTMModel(nVarX, nHid, "uniform", 1) # Initialize model shape and weights
+m     = RNNFluxes.LSTMModel(nVarX, nHid) # Initialize model shape and weights
 ````
 
 Then we can start the straing. If we do this with an `async` macro, the plot updates automatically.
