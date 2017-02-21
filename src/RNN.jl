@@ -13,48 +13,68 @@ type RNNModel <: FluxModel
   lossesVali::Vector{Float64}
   yMin::Float64
   yMax::Float64
-  yNorm::Array{Float64,3}
-  xNorm::Array{Float64,3}
+  yNorm::Vector{Matrix{Float64}}
+  xNorm::Vector{Matrix{Float64}}
   xMin::Vector{Float64}
   xMax::Vector{Float64}
 end
 
-function RNNModel(nVar,nHid)
-  w=iniWeights(RNNModel,nVar,nHid)
+function RNNModel(nVar,nHid;dist=Uniform)
+  w=iniWeights(RNNModel,nVar,nHid,dist)
   totalNweights=nVar*nHid + nHid * nHid + 2*nHid + 1
   length(w) == totalNweights ||  error("Length of weights $(size(weights,1)) does not match needed length $totalNweights!")
-  RNNModel(w,nHid,0,identity,Int[],Float64[],Float64[],NaN,NaN,zeros(0,0,0),zeros(0,0,0),Tuple{Float64,Float64}[])
+  RNNModel(w,nHid,0,identity,Int[],Float64[],Float64[],NaN,NaN,[zeros(0,0)],[zeros(0,0)],Float64[],Float64[])
 end
 
 
 
-function iniWeights(::Type{RNNModel},nVarX::Int=3, nHid::Int=12)
+function iniWeights(::Type{RNNModel},nVarX::Int, nHid::Int,dist)
   weights = -1.0 .+ 2.0 .*
-  [rand_flt(-1./sqrt(nVarX), 1./sqrt(nVarX), nVarX, nHid),  ## Input to hidden
-  rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid,nHid),  ## HIdden to hidden
-  rand_flt(1./-sqrt(nHid), 1./sqrt(nHid),  nHid, 1), ## Hidden to output
+  [rand_flt(1./sqrt(nVarX), dist, nVarX, nHid),  ## Input to hidden
+  rand_flt(1./sqrt(nHid),dist,  nHid,nHid),  ## HIdden to hidden
+  rand_flt(1./sqrt(nHid), dist,  nHid, 1), ## Hidden to output
   0.0 * rand(Float64, 1, nHid),  ## Bias to hidden initialized to zero
   0.0 * rand(Float64, 1)] ## bias to output to zero
   weights=raggedToVector(weights)
 end
 
-function predict(::RNNModel,w, x) ### This implements w as a vector
+function predict(m::RNNModel,w, x) ### This implements w as a vector
 
   # Reshape weight vectors and create temp arrays
-  nTimes,nSamp,nVar,nHid,ypred,w1,w2,w3,w4,w5,hidden_pre,xw1,hidprew2,xcur,hidden = RNN_init_pred(w,x)
+  nSamp,nVar,nHid,w1,w2,w3,w4,w5,hidden_pre,xw1,hidprew2,xcur = RNN_init_pred(m,w,x)
 
-  for s=1:nSamp  ## could this loop be parallelized into say 100 parallel instances? Even a speed up factor 10 would make quite some diff
+  y=map(x) do xs  ## could this loop be parallelized into say 100 parallel instances? Even a speed up factor 10 would make quite some diff
+
+    nTimes=size(xs,2)
+    hidden = zeros(1, nHid,nTimes+1)
+    ypred=zeros(nTimes)
     # Run the prediction
-    RNN_predict_loop(s,nTimes,nVar,nHid,hidden,hidden_pre,hidprew2,ypred,xcur,x,xw1,w1,w2,w3,w4,w5)
+    RNN_predict_loop(nTimes,nVar,nHid,hidden,hidden_pre,hidprew2,ypred,xcur,xs,xw1,w1,w2,w3,w4,w5)
+    ypred
   end
 
-  return ypred
+  return y
 end
 
-function predict_with_gradient(::RNNModel,w, x,ytrue,lossFunc) ### This implements w as a vector
+function RNN_init_pred(model::RNNModel,w,x)
+  nSamp = length(x)
+  nHid = model.nHid
+  nVar = size(x[1],1)
+
+  @reshape_weights(w1=>(nVar,nHid), w2=>(nHid,nHid), w3=>(nHid,1), w4=>(1,nHid), w5=>1)
+
+  # Allocate temprary arrays
+  hidden_pre = zeros(1,nHid)
+  xw1        = zeros(1,nHid)
+  hidprew2   = zeros(1,nHid)
+  xcur       = zeros(1,nVar)
+  return nSamp,nVar,nHid,w1,w2,w3,w4,w5,hidden_pre,xw1,hidprew2,xcur
+end
+
+function predict_with_gradient(m::RNNModel,w, x,ytrue,lossFunc) ### This implements w as a vector
 
   # Reshape weight vectors and create temp arrays
-  nTimes,nSamp,nVar,nHid,ypred,w1,w2,w3,w4,w5,hidden_pre,xw1,hidprew2,xcur,hidden = RNN_init_pred(w,x)
+  nSamp,nVar,nHid,w1,w2,w3,w4,w5,hidden_pre,xw1,hidprew2,xcur = RNN_init_pred(m,w,x)
 
   # Allocate additional arrays for derivative calculation
   dWxh, dWhh, dWhy = [zeros(size(w1)) for i=1:nSamp], [zeros(size(w2)) for i=1:nSamp], [zeros(size(w3)) for i=1:nSamp]
@@ -63,19 +83,24 @@ function predict_with_gradient(::RNNModel,w, x,ytrue,lossFunc) ### This implemen
   dh               = zeros(nHid,1)
   dhraw            = zeros(nHid,1)
 
-  for s=1:nSamp  ## could this loop be parallelized into say 100 parallel instances? Even a speed up factor 10 would make quite some diff
+  foreach(x,ytrue,1:nSamp) do xs,ys,s
 
+    fill!(dhnext,0.0);fill!(dh,0.0);fill!(dhraw,0.0)
+
+    nTimes = size(xs,2)
+    ypred  = zeros(nTimes)
+    hidden = zeros(1, nHid,nTimes+1)
     # Run the prediction
-    RNN_predict_loop(s,nTimes,nVar,nHid,hidden,hidden_pre,hidprew2,ypred,xcur,x,xw1,w1,w2,w3,w4,w5)
+    RNN_predict_loop(nTimes,nVar,nHid,hidden,hidden_pre,hidprew2,ypred,xcur,xs,xw1,w1,w2,w3,w4,w5)
 
     # Run the derivative backward pass
     for i=nTimes:-1:1
 
       # Derivative of the loss function
-      dy = deriv(lossFunc,ytrue[i,s],ypred[i,s])
+      dy = deriv(lossFunc,ys[i],ypred[i])
 
       # Derivative of the activations function (still a scalar)
-      dy2 = derivActivation(ypred[i,s],dy)
+      dy2 = derivActivation(ypred[i],dy)
 
       #Copy current hidden state to temp array
       copy!(hidden_pre,1,hidden,nHid*(i-1)+1,nHid)
@@ -99,7 +124,7 @@ function predict_with_gradient(::RNNModel,w, x,ytrue,lossFunc) ### This implemen
       @inbounds for j=1:nHid dbhcur[j]  += dhraw[j] end
 
       # Copy current x state to temp array
-      @inbounds for j=1:nVar xcur[j]=x[i,s,j] end
+      @inbounds for j=1:nVar xcur[j]=xs[j,i] end
 
       # Get input-to-hidden derivatives
       gemm!('T','T',1.0,xcur,dhraw,1.0,dWxh[s])
@@ -124,21 +149,16 @@ function predict_with_gradient(::RNNModel,w, x,ytrue,lossFunc) ### This implemen
 end
 
 
-function RNN_predict_loop(s,nTimes,nVar,nHid,hidden,hidden_pre,hidprew2,ypred,xcur,x,xw1,w1,w2,w3,w4,w5)
+function RNN_predict_loop(nTimes,nVar,nHid,hidden,hidden_pre,hidprew2,ypred,xcur,xs,xw1,w1,w2,w3,w4,w5)
 
     #Emtpy temporary arrays
     fill!(hidden,zero(eltype(hidden)))
     fill!(hidden_pre,zero(eltype(hidden_pre)))
 
     for i=1:nTimes
-      ## w[1] weights from input to hidden
-      ## w[2] weights hidden to hidden
-      ## w[3] weights hidden to output
-      ## w[4] bias to hidden
-      ## w[5] bias to output
 
       # First copy current x variables to xcur
-      for j=1:nVar xcur[j]=x[i,s,j] end
+      for j=1:nVar xcur[j]=xs[j,i] end
 
       #Then calculate x * w1 and hidden[:,:,i-1]*w2
       A_mul_B!(xw1,xcur,w1)
@@ -153,7 +173,7 @@ function RNN_predict_loop(s,nTimes,nVar,nHid,hidden,hidden_pre,hidprew2,ypred,xc
       copy!(hidden_pre,1,hidden,nHid*(i-1)+1,nHid)
 
       #Calculate prediction through hidden*w3+w5
-      ypred[i,s] = sigm(dot(hidden_pre,w3) + w5[1])
+      ypred[i] = sigm(dot(hidden_pre,w3) + w5[1])
     end
 
 end
