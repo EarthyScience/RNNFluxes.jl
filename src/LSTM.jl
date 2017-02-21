@@ -199,7 +199,7 @@ function predict_with_gradient(model::LSTMModel,w, x,ytrue,lossFunc) ### This im
   #return -[reshape(sum(dWxh), nVar*nHid ); reshape(sum(dWhh), nHid*nHid) ; reshape(sum(dWhy),nHid) ; reshape(sum(dbh),nHid) ; reshape(sum(dby),1)]
 end
 
-function iniWeights(::Type{LSTMModel}, nVarX::Int=3, nHid::Int=12, dist = Uniform, forgetBias = 1)
+function iniWeights(::Type{LSTMModel}, nVarX::Int, nHid::Int, dist, forgetBias)
   weights = [rand_flt(1./sqrt(nVarX), dist, nHid, nVarX),  ## Input block
   rand_flt(1./sqrt(nHid), dist, nHid, nHid),
   rand_flt(1./sqrt(nHid), dist, nHid, 1),
