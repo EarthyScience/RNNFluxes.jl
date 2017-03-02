@@ -8,6 +8,7 @@ include("plotProgress.jl")
 include("train.jl")
 include("RNN.jl")
 include("LSTM.jl")
+include("GRU.jl")
 include("testdata.jl")
 
 

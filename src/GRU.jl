@@ -2,11 +2,11 @@ import Base.LinAlg: gemv!
 using Distributions
 
 """
-    type LSTM
+    type GRU
 
-Implementation of an LSTM.
+Implementation of an GRU.
 """
-type LSTMModel <: FluxModel
+type GRUModel <: FluxModel
   weights::Vector{Float64}
   nHid::Int
   nVarX::Int
@@ -22,14 +22,14 @@ type LSTMModel <: FluxModel
   xMax::Vector{Float64}
 end
 
-function LSTMModel(nVar,nHid; dist = Uniform, forgetBias = 1)
-  w=iniWeights(LSTMModel, nVar, nHid, dist, forgetBias)
+function GRUModel(nVar,nHid; dist = Uniform, forgetBias = 1)
+  w=iniWeights(GRUModel, nVar, nHid, dist, forgetBias)
   totalNweights=4*(nVar * nHid + nHid * nHid + nHid) + nHid + 1
   length(w) == totalNweights ||  error("Length of weights $(size(weights,1)) does not match needed length $totalNweights!")
-  LSTMModel(w,nHid,0,identity,Int[],Float64[],Float64[],NaN,NaN,[zeros(0,0)],[zeros(0,0)],Float64[],Float64[])
+  GRUModel(w,nHid,0,identity,Int[],Float64[],Float64[],NaN,NaN,[zeros(0,0)],[zeros(0,0)],Float64[],Float64[])
 end
 
-function predict(model::LSTMModel,w,x)
+function predict(model::GRUModel,w,x)
   nSamp = length(x)
   nVar  = size(x[1],1)
 
@@ -97,7 +97,7 @@ function vec_add!(a,b)
   a
 end
 
-function predict_with_gradient(model::LSTMModel,w, x,ytrue,lossFunc) ### This implements w as a vector
+function predict_with_gradient(model::GRUModel,w, x,ytrue,lossFunc) ### This implements w as a vector
   nSamp = length(x)
 
   nVar = size(x[1],1)
@@ -197,7 +197,7 @@ function predict_with_gradient(model::LSTMModel,w, x,ytrue,lossFunc) ### This im
   reshape(sum(dw13), nHid); reshape(sum(dw14), 1)]
 end
 
-function iniWeights(::Type{LSTMModel}, nVarX::Int, nHid::Int, dist, forgetBias)
+function iniWeights(::Type{GRUModel}, nVarX::Int, nHid::Int, dist, forgetBias)
   weights = [rand_flt(1./sqrt(nVarX), dist, nHid, nVarX),  ## Input block
   rand_flt(1./sqrt(nHid), dist, nHid, nHid),
   rand_flt(1./sqrt(nHid), dist, nHid, 1),

@@ -23,6 +23,8 @@ When both are using the old __autograd__ automatic diff to do the backprop, RNN 
 
 RNN with the explicit gradient is about __28__ times faster than the LSTM with the auto-diff.
 
+RNN with the explicit gradient is about __1.3__ times faster than the LSTM with the explicit gradient.
+
 However, the LSTM seems to perform better - when epoch and sample size is high.
 
 # Usage in IJulia Notebook
