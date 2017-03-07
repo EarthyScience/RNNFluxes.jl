@@ -22,8 +22,8 @@ type GRUModel <: FluxModel
   xMax::Vector{Float64}
 end
 
-function GRUModel(nVar,nHid; dist = Uniform, forgetBias = 1)
-  w=iniWeights(GRUModel, nVar, nHid, dist, forgetBias)
+function GRUModel(nVar,nHid; dist = Uniform)
+  w=iniWeights(GRUModel, nVar, nHid, dist)
   totalNweights=4*(nVar * nHid + nHid * nHid + nHid) + nHid + 1
   length(w) == totalNweights ||  error("Length of weights $(size(weights,1)) does not match needed length $totalNweights!")
   GRUModel(w,nHid,0,identity,Int[],Float64[],Float64[],NaN,NaN,[zeros(0,0)],[zeros(0,0)],Float64[],Float64[])
@@ -48,10 +48,11 @@ function predict(model::GRUModel,w,x)
     for i=1:nTimes
         a       = tanh(w1 * xx[:,i:i] + w2 * hidden + w3)
         igate   = sigm(w4 * xx[:,i:i] + w5 * hidden + w6)
-        fgate   = sigm(w7 * xx[:,i:i] + w8 * hidden + w9)
+        #fgate   = sigm(w7 * xx[:,i:i] + w8 * hidden + w9)
         ogate   = sigm(w10 *xx[:,i:i] + w11 * hidden + w12)
-        state   = a .* igate + fgate .* state
-        hidden  = tanh(state) .* ogate
+        state   = a .* igate + (1 .- igate) .* state
+        #hidden  = tanh(state) .* ogate
+        hidden  = state .* ogate
         yout[i] = sigm(w13 * hidden + w14)[1]
     end
     yout
@@ -120,18 +121,18 @@ function predict_with_gradient(model::GRUModel,w, x,ytrue,lossFunc) ### This imp
     dState, dOut  = zeros(nHid,1), zeros(nHid)
     xHelp         = zeros(nHid)
     dInput, dIgate, dFgate, dOgate = [zeros(nHid) for i=1:nTimes+1], [zeros(nHid) for i=1:nTimes+1], [zeros(nHid) for i=1:nTimes+1], [zeros(nHid) for i=1:nTimes+1]
-    input, igate, fgate, ogate = [zeros(nHid) for i=1:nTimes],[zeros(nHid) for i=1:nTimes],[zeros(nHid) for i=1:nTimes+1],[zeros(nHid) for i=1:nTimes]
+    input, igate, fgate, ogate = [zeros(nHid) for i=1:nTimes],[zeros(nHid) for i=1:nTimes+1],[zeros(nHid) for i=1:nTimes+1],[zeros(nHid) for i=1:nTimes]
 
     for i=1:nTimes
         xslice      = xx[:,i]
         @chain_matmulv_add(xHelp.=w1  * xslice + w2  * out[i] + w3 ); map!(tanh,input[i],xHelp); fill!(xHelp,0.0)
         @chain_matmulv_add(xHelp.=w4  * xslice + w5  * out[i] + w6 ); map!(sigm,igate[i],xHelp); fill!(xHelp,0.0)
-        @chain_matmulv_add(xHelp.=w7  * xslice + w8  * out[i] + w9 ); map!(sigm,fgate[i],xHelp); fill!(xHelp,0.0)
+        #@chain_matmulv_add(xHelp.=w7  * xslice + w8  * out[i] + w9 ); map!(sigm,fgate[i],xHelp); fill!(xHelp,0.0)
         @chain_matmulv_add(xHelp.=w10 * xslice + w11 * out[i] + w12); map!(sigm,ogate[i],xHelp); fill!(xHelp,0.0)
         input1,igate1,fgate1,ogate1,state1,out2,state2 = input[i],igate[i],fgate[i],ogate[i],state[i],out[i+1],state[i+1]
         @inbounds for j=1:nHid
-          state2[j] = input1[j] * igate1[j] + fgate1[j] * state1[j]
-          out2[j]   = tanh(state2[j]) * ogate1[j]
+          state2[j] = input1[j] * igate1[j] + (1 - igate1[j]) * state1[j]
+          out2[j]   = state2[j] * ogate1[j]
         end
         ypred[i]    = sigm(dot(w13,out[i+1]) + w14[1])
     end
@@ -149,43 +150,44 @@ function predict_with_gradient(model::GRUModel,w, x,ytrue,lossFunc) ### This imp
       dw14[s][1] += dy2[1]
 
       dOut[:]=0.0
-      @chain_matmulv_add(dOut .= w13' * dy2 + w2' * dInput1 + w5' * dIgate1 + w8' * dFgate1 + w11' * dOgate1) ## Most important line
+      #@chain_matmulv_add(dOut .= w13' * dy2 + w2' * dInput1 + w5' * dIgate1 + w8' * dFgate1 + w11' * dOgate1) ## Most important line
+      @chain_matmulv_add(dOut .= w13' * dy2 + w2' * dInput1 + w5' * dIgate1 + w11' * dOgate1) ## Most important line
 
       # Update hidden weights
       if i<nTimes
         outslice = out[i+1]
         gemm!('N','T',1.0,dInput1,outslice,1.0,dw2[s])
         gemm!('N','T',1.0,dIgate1,outslice,1.0,dw5[s])
-        gemm!('N','T',1.0,dFgate1,outslice,1.0,dw8[s])
+        #gemm!('N','T',1.0,dFgate1,outslice,1.0,dw8[s])
         gemm!('N','T',1.0,dOgate1,outslice,1.0,dw11[s])
       end
       # Update biases
       @inbounds for j=1:nHid
         dw3[s][j] += dInput1[j]
         dw6[s][j] += dIgate1[j]
-        dw9[s][j] += dFgate1[j]
+        #dw9[s][j] += dFgate1[j]
         dw12[s][j] += dOgate1[j]
       end
 
       dInput1, dIgate1,dFgate1,dOgate1 = dInput[i], dIgate[i], dFgate[i], dOgate[i]
       input1,   igate1, fgate1, ogate1 =  input[i],  igate[i],  fgate[i],  ogate[i]
-      state2,fgate2 = state[i+1], fgate[i+1]
+      state2,fgate2,igate2 = state[i+1], fgate[i+1], igate[i+1]
 
       #map!((dO,og,st,dS,fg)->dO * og * (1-tanh(st)) * tanh(st) + dS * fg,dState,dOut,ogate1,state[i+1],dState,fgate[i+1])
       @inbounds for j=1:nHid
-        dState[j] = dOut[j] * ogate1[j] * (1 - tanh(state2[j]) * tanh(state2[j])) + dState[j] * fgate2[j]
+        dState[j] = dOut[j] * ogate1[j] + dState[j] * (1 - igate2[j])
       end     ## Also very important
       @inbounds for j=1:nHid
         dInput1[j] = dState[j] * igate1[j] * (1 - input1[j] * input1[j])
-        dIgate1[j] = dState[j] * input1[j] * igate1[j] * (1 - igate1[j])
-        dFgate1[j] = dState[j] * state[i][j] * fgate1[j] * (1 - fgate1[j])
-        dOgate1[j] = dOut[j] * tanh(state[i+1][j]) * ogate1[j] * (1 - ogate1[j])
+        dIgate1[j] = dState[j] * (input1[j] - state[i][j]) * igate1[j] * (1 - igate1[j])
+        #dFgate1[j] = dState[j] * state[i][j] * fgate1[j] * (1 - fgate1[j])
+        dOgate1[j] = dOut[j] * state[i+1][j] * ogate1[j] * (1 - ogate1[j])
       end
       # Update input weights
       xslice = xx[:,i:i]
       gemm!('N','T',1.0,dInput1,xslice,1.0,dw1[s])
       gemm!('N','T',1.0,dIgate1,xslice,1.0,dw4[s])
-      gemm!('N','T',1.0,dFgate1,xslice,1.0,dw7[s])
+      #gemm!('N','T',1.0,dFgate1,xslice,1.0,dw7[s])
       gemm!('N','T',1.0,dOgate1,xslice,1.0,dw10[s])
     end
   end
@@ -197,37 +199,20 @@ function predict_with_gradient(model::GRUModel,w, x,ytrue,lossFunc) ### This imp
   reshape(sum(dw13), nHid); reshape(sum(dw14), 1)]
 end
 
-function iniWeights(::Type{GRUModel}, nVarX::Int, nHid::Int, dist, forgetBias)
+function iniWeights(::Type{GRUModel}, nVarX::Int, nHid::Int, dist)
   weights = [rand_flt(1./sqrt(nVarX), dist, nHid, nVarX),  ## Input block
   rand_flt(1./sqrt(nHid), dist, nHid, nHid),
   rand_flt(1./sqrt(nHid), dist, nHid, 1),
-  rand_flt(1./sqrt(nVarX), dist, nHid, nVarX),  ## Input gate
+  rand_flt(1./sqrt(nVarX), dist, nHid, nVarX),  ## reset gate
   rand_flt(1./sqrt(nHid),  dist, nHid,nHid),
   rand_flt(1./sqrt(nHid),  dist, nHid, 1),
   rand_flt(1./sqrt(nVarX), dist, nHid, nVarX),  ## Forget Gate
   rand_flt(1./sqrt(nHid),  dist, nHid,nHid),
-  forgetBias != 0 ? forgetBias .* ones(nHid, 1) : rand_flt(1./sqrt(nHid),  dist, nHid, 1),
+  rand_flt(1./sqrt(nHid),  dist, nHid, 1),
   rand_flt(1./sqrt(nVarX), dist, nHid, nVarX),  ## Output Gate
   rand_flt(1./sqrt(nHid),  dist, nHid,nHid),
   rand_flt(1./sqrt(nHid),  dist, nHid, 1),
   rand_flt(1./sqrt(nHid), dist, 1, nHid), ## Linear activation weights
   rand_flt(1./sqrt(1), dist, 1, 1)] ## Linear activation bias
-  if dist == "old"
-    weights = -1.0 + 2.0 .*
-      [rand_flt(1./sqrt(nVarX), Uniform, nHid, nVarX),  ## Input block
-      rand_flt(1./sqrt(nHid), Uniform, nHid,nHid),
-      rand_flt(1./sqrt(nHid), Uniform, nHid, 1),
-      rand_flt(1./sqrt(nVarX), Uniform, nHid, nVarX),  ## Input gate
-      rand_flt(1./sqrt(nHid),  Uniform,nHid,nHid),
-      rand_flt(1./sqrt(nHid), Uniform,  nHid, 1),
-      rand_flt(1./sqrt(nVarX), Uniform, nHid, nVarX),  ## Forget Gate
-      rand_flt(1./sqrt(nHid), Uniform, nHid,nHid),
-      rand_flt(1./sqrt(nHid), Uniform, nHid, 1),
-      rand_flt(1./sqrt(nVarX), Uniform, nHid, nVarX),  ## Output Gate
-      rand_flt(1./sqrt(nHid), Uniform, nHid,nHid),
-      rand_flt(1./sqrt(nHid), Uniform, nHid, 1),
-      0.0 * rand(Float64, 1, nHid), ## Linear activation weights
-      0.0 * rand(Float64, 1)] ## Linear activation bias
-  end
   weights = raggedToVector(weights)
 end
