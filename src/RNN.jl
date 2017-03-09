@@ -26,15 +26,12 @@ function RNNModel(nVar,nHid;dist=Uniform)
   RNNModel(w,nHid,0,identity,Int[],Float64[],Float64[],NaN,NaN,[zeros(0,0)],[zeros(0,0)],Float64[],Float64[])
 end
 
-
-
-function iniWeights(::Type{RNNModel},nVarX::Int, nHid::Int,dist)
-  weights = -1.0 .+ 2.0 .*
-  [rand_flt(1./sqrt(nVarX), dist, nVarX, nHid),  ## Input to hidden
-  rand_flt(1./sqrt(nHid),dist,  nHid,nHid),  ## HIdden to hidden
-  rand_flt(1./sqrt(nHid), dist,  nHid, 1), ## Hidden to output
-  0.0 * rand(Float64, 1, nHid),  ## Bias to hidden initialized to zero
-  0.0 * rand(Float64, 1)] ## bias to output to zero
+function iniWeights(::Type{RNNModel},nVarX::Int, nHid::Int, dist)
+  weights = [rand_flt(1./sqrt(nVarX), dist, nHid, nVarX), ## Input to hidden
+  rand_flt(1./sqrt(nHid), dist, nHid, nHid), # Hidden to hidden
+  rand_flt(1./sqrt(nHid), dist, nHid, 1), # Hidden to Output
+  rand_flt(1./sqrt(nHid), dist, 1, nHid), ## Linear activation weights
+  rand_flt(1./sqrt(1), dist, 1, 1)] ## Linear activation bias
   weights=raggedToVector(weights)
 end
 

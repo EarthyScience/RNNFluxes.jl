@@ -29,6 +29,24 @@ function LSTMModel(nVar,nHid; dist = Uniform, forgetBias = 1)
   LSTMModel(w,nHid,0,identity,Int[],Float64[],Float64[],NaN,NaN,[zeros(0,0)],[zeros(0,0)],Float64[],Float64[])
 end
 
+function iniWeights(::Type{LSTMModel}, nVarX::Int, nHid::Int, dist, forgetBias)
+  weights = [rand_flt(1./sqrt(nVarX), dist, nHid, nVarX),  ## Input block
+  rand_flt(1./sqrt(nHid), dist, nHid, nHid),
+  rand_flt(1./sqrt(nHid), dist, nHid, 1),
+  rand_flt(1./sqrt(nVarX), dist, nHid, nVarX),  ## Input gate
+  rand_flt(1./sqrt(nHid),  dist, nHid,nHid),
+  rand_flt(1./sqrt(nHid),  dist, nHid, 1),
+  rand_flt(1./sqrt(nVarX), dist, nHid, nVarX),  ## Forget Gate
+  rand_flt(1./sqrt(nHid),  dist, nHid,nHid),
+  forgetBias != 0 ? forgetBias .* ones(nHid, 1) : rand_flt(1./sqrt(nHid),  dist, nHid, 1),
+  rand_flt(1./sqrt(nVarX), dist, nHid, nVarX),  ## Output Gate
+  rand_flt(1./sqrt(nHid),  dist, nHid,nHid),
+  rand_flt(1./sqrt(nHid),  dist, nHid, 1),
+  rand_flt(1./sqrt(nHid), dist, 1, nHid), ## Linear activation weights
+  rand_flt(1./sqrt(1), dist, 1, 1)] ## Linear activation bias
+  weights = raggedToVector(weights)
+end
+
 function predict(model::LSTMModel,w,x)
   nSamp = length(x)
   nVar  = size(x[1],1)
@@ -57,44 +75,6 @@ function predict(model::LSTMModel,w,x)
     yout
   end
   ypred
-end
-
-#gemv!(tA, alpha, A, x, beta, y)
-#Update the vector y as alpha*A*x + beta*y or alpha*A'x + beta*y according to tA (transpose A). Returns the updated y.
-macro chain_matmulv_add(ex)
-  ex.head==:(.=) || error("Wrong format. Input expression must be assignment with .=")
-  outAr = ex.args[1]
-  ex = ex.args[2]
-  (ex.head==:call && ex.args[1]==:(+)) || error("Wrong input format, right-hand side must be a sum")
-  outEx = quote end
-  for a in ex.args[2:end]
-    if isa(a,Symbol)
-      push!(outEx.args,:(vec_add!($outAr,$a)))
-    elseif a.head==:call && a.args[1]==:(*)
-      matsym = a.args[2]
-      t='N'
-      if isa(matsym,Expr)
-        t='T'
-        matsym=matsym.args[1]
-      end
-      vecsym = a.args[3]
-      push!(outEx.args,:(gemv!($t,1.0,$matsym,$vecsym,1.0,$outAr)))
-    else
-      error("Unknown operand")
-    end
-  end
-  outEx
-end
-
-macroexpand(:(@chain_matmulv_add dOut.=w1*x+w2*y+w3'*z+w4))
-
-"Adds vectors a and b and stores the result in a"
-function vec_add!(a,b)
-  length(a) == length(b) || error("Lengths of a and b differ")
-  @inbounds for i=1:length(a)
-    a[i]=a[i]+b[i]
-  end
-  a
 end
 
 function predict_with_gradient(model::LSTMModel,w, x,ytrue,lossFunc) ### This implements w as a vector
@@ -195,39 +175,4 @@ function predict_with_gradient(model::LSTMModel,w, x,ytrue,lossFunc) ### This im
   reshape(sum(dw7), nVar*nHid); reshape(sum(dw8), nHid*nHid); reshape(sum(dw9), nHid);
   reshape(sum(dw10), nVar*nHid); reshape(sum(dw11), nHid*nHid); reshape(sum(dw12), nHid);
   reshape(sum(dw13), nHid); reshape(sum(dw14), 1)]
-end
-
-function iniWeights(::Type{LSTMModel}, nVarX::Int, nHid::Int, dist, forgetBias)
-  weights = [rand_flt(1./sqrt(nVarX), dist, nHid, nVarX),  ## Input block
-  rand_flt(1./sqrt(nHid), dist, nHid, nHid),
-  rand_flt(1./sqrt(nHid), dist, nHid, 1),
-  rand_flt(1./sqrt(nVarX), dist, nHid, nVarX),  ## Input gate
-  rand_flt(1./sqrt(nHid),  dist, nHid,nHid),
-  rand_flt(1./sqrt(nHid),  dist, nHid, 1),
-  rand_flt(1./sqrt(nVarX), dist, nHid, nVarX),  ## Forget Gate
-  rand_flt(1./sqrt(nHid),  dist, nHid,nHid),
-  forgetBias != 0 ? forgetBias .* ones(nHid, 1) : rand_flt(1./sqrt(nHid),  dist, nHid, 1),
-  rand_flt(1./sqrt(nVarX), dist, nHid, nVarX),  ## Output Gate
-  rand_flt(1./sqrt(nHid),  dist, nHid,nHid),
-  rand_flt(1./sqrt(nHid),  dist, nHid, 1),
-  rand_flt(1./sqrt(nHid), dist, 1, nHid), ## Linear activation weights
-  rand_flt(1./sqrt(1), dist, 1, 1)] ## Linear activation bias
-  if dist == "old"
-    weights = -1.0 + 2.0 .*
-      [rand_flt(1./sqrt(nVarX), Uniform, nHid, nVarX),  ## Input block
-      rand_flt(1./sqrt(nHid), Uniform, nHid,nHid),
-      rand_flt(1./sqrt(nHid), Uniform, nHid, 1),
-      rand_flt(1./sqrt(nVarX), Uniform, nHid, nVarX),  ## Input gate
-      rand_flt(1./sqrt(nHid),  Uniform,nHid,nHid),
-      rand_flt(1./sqrt(nHid), Uniform,  nHid, 1),
-      rand_flt(1./sqrt(nVarX), Uniform, nHid, nVarX),  ## Forget Gate
-      rand_flt(1./sqrt(nHid), Uniform, nHid,nHid),
-      rand_flt(1./sqrt(nHid), Uniform, nHid, 1),
-      rand_flt(1./sqrt(nVarX), Uniform, nHid, nVarX),  ## Output Gate
-      rand_flt(1./sqrt(nHid), Uniform, nHid,nHid),
-      rand_flt(1./sqrt(nHid), Uniform, nHid, 1),
-      0.0 * rand(Float64, 1, nHid), ## Linear activation weights
-      0.0 * rand(Float64, 1)] ## Linear activation bias
-  end
-  weights = raggedToVector(weights)
 end
