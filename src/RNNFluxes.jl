@@ -9,6 +9,7 @@ include("train.jl")
 include("RNN.jl")
 include("LSTM.jl")
 include("GRU.jl")
+include("Generic.jl")
 include("testdata.jl")
 
 
