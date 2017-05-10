@@ -54,3 +54,11 @@ Then we can start the straing. If we do this with an `async` macro, the plot upd
 ````julia
 t = train_net(m,x,y,4001,batchSize=20,plotProgress=true,infoStepSize=100,searchParams=RNNFluxes.Adam(m.weights; lr=0.005, beta1=0.5, beta2=0.75, t=1, eps=1e-6, fstm=zeros(m.weights), scndm=zeros(m.weights)))
 ````
+
+# Things to change
+
+## Normalization
+
+* happens in predict function, so that NN normalizes its own data
+* mixed models might need norm and unnorm data
+*

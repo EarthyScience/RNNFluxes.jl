@@ -10,6 +10,7 @@ include("RNN.jl")
 include("LSTM.jl")
 include("GRU.jl")
 include("Generic.jl")
+include("normalization.jl")
 include("testdata.jl")
 
 

@@ -20,9 +20,9 @@ abstract FluxModel
 
 ## Should move to stable code, when performance ok
 function mseLoss(w, x, y, model)
-    p = predict(model,w,x)
-    n = mapreduce(length,+,y)
-    return mapreduce(ii->sumabs2(iix-iiy for (iix,iiy) in zip(ii...)),+,zip(p,y))/n
+  p = predict(model,w,x)
+  n = mapreduce(length,+,y)
+  return mapreduce(ii->sumabs2(iix-iiy for (iix,iiy) in zip(ii...)),+,zip(p,y))/n
 end
 
 ## Should move to stable code, when performance ok
@@ -35,7 +35,7 @@ derivActivation!(dest,hidden,dh) = for j=1:length(hidden) dest[j]=hidden[j]*(1-h
 deriv(::typeof(mseLoss),ytrue,ypred)=ytrue-ypred
 deriv(::typeof(mseLoss_old),ytrue,ypred)=ytrue-ypred
 function sigm(xi::Number)
-  if xi>=0
+  if xi>=zero(xi)
     z=exp(-xi)
     return one(xi)/(one(xi)+z)
   else
@@ -74,8 +74,8 @@ function train_net(
     losscalcsize=20,
     ### Also graphical output via the react/interact interface?
     plotProgress=false,
-	### How many to plot in MOD vs OBS scatter plot
-	nPlotsample=2000
+	  ### How many to plot in MOD vs OBS scatter plot
+	  nPlotsample=2000
     )
 
     nSamp = length(x)
@@ -89,10 +89,7 @@ function train_net(
     ## are compared with the data (default is Mean Squared Error across sequences)
     loss(w, x, y)=lossFunc(w, x, y, model)
 
-    ### Normalize y to 0,1
-    xNorm,xMin,xMax = normalize_data(x,-1.0,1.0)
-    yNorm,yMin,yMax = normalize_data(y,0.0,1.0)
-    model.xNorm,model.yNorm,model.yMin,model.yMax,model.xMin,model.xMax = xNorm,yNorm,yMin[1],yMax[1],xMin,xMax
+    xNorm, yNorm = normalize_data(model,x,y)
     ## Split data set for cross-validation
     ## Could be parameterized in the function call later!!
     ## Also missing a full k-fold crossvalidation
@@ -159,7 +156,7 @@ function train_net(
             #println(typeof(yNorm))
             if plotProgress
               latestStart = outputtimesteps[end] - minimum([trunc(Int,outputtimesteps[end]*0.66) 1000])
-              subTS       = findfirst(i->i>=latestStart,outputtimesteps):length(outputtimesteps)
+              subTS       = findfirst(k->k>=latestStart,outputtimesteps):length(outputtimesteps)
               curPredAll  = predict(model,w, xNorm)
               predTrain   = curPredAll[trainIdx]
               predVali    = curPredAll[valiIdx]
@@ -184,28 +181,14 @@ whole thing should be improved. An object of Type TrainedModel should be used or
 function predict_after_train(model::FluxModel, x)
 
     #istaskdone(model.trainTask) || error("Training not finished yet")
-    xNorm = normalize_data(x)
-    yNorm = predict_old(model,model.weights, xNorm)
-    yPred = yNorm .* (model.yMax-model.yMin) .+ model.yMin
+    xNorm = normalize_data(model, x, nothing)
+    yNorm = predict(model,model.weights, xNorm)
+    yPred = normalize_data_inv(model,y)
 
     return yPred
 end
 
-function normalize_data(x,newmin,newmax)
-  xall=hcat(x...)
-  xMin,xMax=zeros(size(xall,1)),zeros(size(xall,1))
-  for i=1:size(xall,1)
-    xv = xall[i,:]
-    xMin[i],xMax[i]=minimum(xv[!isnan(xv)]),maximum(xv[!isnan(xv)])
-  end
-  xNorm=deepcopy(x)
-  for (xx,xxNorm) in zip(x,xNorm)
-    for j in 1:size(xx,2), v in 1:size(xx,1)
-      xxNorm[v,j] = (newmax-newmin).* ((xx[v,j]-xMin[v])/(xMax[v]-xMin[v]))+newmin
-    end
-  end
-  xNorm,xMin,xMax
-end
+
 
 function sampleRagged{T}(x::Vector{Matrix{T}},nsample)
     nel = map(i->Float64(length(i)-sum(isnan,i)),x)
@@ -258,27 +241,4 @@ function raggedToVector(raggedArray)
         totalLength+=elemLength
     end
     return ragged_as_Vector
-end
-
-
-
-### Update the weights based on the current gradient dw, and the "normal" (not Nesterov) momentum approach
-### STRANGE THAT the momentum update in !update gives different (slower!) convergence
-function train_step_mom(w, dw, v; lr=.001, momentum=0.9)
-        for i in 1:length(w)
-            v[i] = momentum * v[i] - lr * dw[i]
-            w[i] += v[i]
-        end
-    return w, v
-end
-
-### Update the weights based on the current gradient dw, and the rmsprop approach
-### e.g. http://cs231n.github.io/neural-networks-3/
-function train_step_rmsprop(w, dw, cache; lr=0.002, decay=0.9, eps=1e-6)
-        for i in 1:length(w)
-            cache[i] = decay .* cache[i] .+ (1-decay) .* dw[i].^2
-            w[i] += -lr .* dw[i] ./ (cache[i].^0.5 .+ eps)
-        end
-
-    return w, cache
 end

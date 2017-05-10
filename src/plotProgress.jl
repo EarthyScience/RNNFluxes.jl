@@ -5,8 +5,9 @@ function plotSignal(outputsteps,lossesTrain, lossesVali, predTrain, yTrain,predV
   gr()
   epIdx=outputsteps
 
-  plot([epIdx, predVali, epIdx,   epIdx, [0,1], epIdx, epIdx,    predTrain],
-		  [lossesTrain,yVali, lossesTrain,    lossesVali,  [0,1],  lossesVali,  lossesTrain,    yTrain],
+  mi,ma = extrema([yTrain;yVali])
+  plot([epIdx, predVali, epIdx,   epIdx, [mi,ma], epIdx, epIdx,    predTrain],
+		  [lossesTrain,yVali, lossesTrain,    lossesVali,  [mi,ma],  lossesVali,  lossesTrain,    yTrain],
 		line=[:line :scatter :line              :line :line  :line                :line    :scatter],
 		color=["blue" "orange" "blue"          "orange" "red" "orange"            "blue"   "blue"],
 		leg=[true false false],
