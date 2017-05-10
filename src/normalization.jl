@@ -30,5 +30,5 @@ function normalize_data(model::FluxModel,x,newmin,newmax)
       xxNorm[v,j] = (newmax-newmin).* ((xx[v,j]-xMin[v])/(xMax[v]-xMin[v]))+newmin
     end
   end
-
+  xNorm,xMin,xMax
 end

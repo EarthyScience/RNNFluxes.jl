@@ -181,7 +181,7 @@ whole thing should be improved. An object of Type TrainedModel should be used or
 function predict_after_train(model::FluxModel, x)
 
     #istaskdone(model.trainTask) || error("Training not finished yet")
-    xNorm = normalize_data(model, x, nothing)
+    xNorm, Y = normalize_data(model, x, nothing)
     yNorm = predict(model,model.weights, xNorm)
     yPred = normalize_data_inv(model,y)
 
