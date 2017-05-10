@@ -1,5 +1,7 @@
-julia 0.5
-Interact
+julia0.5
 Plots
-AutoGrad
-DataSTructures
+ForwardDiff
+Knet
+Compat
+Interact
+FixedSizeArrays
