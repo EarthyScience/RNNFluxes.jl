@@ -4,7 +4,7 @@ import Interact: checkbox
 import StatsBase: sample
 #using Knet
 import Knet: sigm
-import StatsBase: WeightVec
+import StatsBase: Weights
 export iniWeights, train_net, predict_after_train, loadSeasonal, RNNModel
 #import Interact: checkbox
 ### Predict function using the ragged Array directly (deprecated)
@@ -52,12 +52,25 @@ end
 getDist(::Type{Uniform},scale)=Uniform(-scale,scale)
 getDist(::Type{Normal},scale)=Normal(0.0,scale)
 
-### for 1/sqrt(n) rule of thumb cf. http://www.wildml.com/2015/09/recurrent-neural-networks-tutorial-part-2-implementing-a-language-model-rnn-with-python-numpy-and-theano/
+"""
+    train_net(model::FluxModel, x, y, nEpoch)
 
-#Training:
-## Input x[nTimes, nSamples, nVar]
-##       y[nTimes, nSamples]
-##       nEpochs
+Trains a model defined in `model` on the given predictors `x` and labels `y` for `nEpoch` training steps.
+Here, `x` as well as `y` are vectors of matrices of size (nVar x nTimeStep). Each matrix stands for a single sample,
+for example a tower time series. The length of the individual time series is allowed to differ.
+
+### Keyword arguments
+
+* `lossFunc` lossFUnction to be evaluated, defaults to mseLoss
+* `batchSize` number of samples to be used for each update step
+* `searchParams` One of the training methods defined in Knet. Can be any object of type `Sgd`, `Momentum`, `Adam`, `Adagrad`, `Adadelta`, `Rmsprop`. Have a look at *update.jl* to see how to construct this
+* `infoStepSize` stepsize in which traing and validation losses will be calculated and printed to the screen
+* `valiFrac` fraction of samples to be omitted from training as a validation dataset. Can be either a Float for a random fraction or vector of indices of omitted datasets, defaults to 0.2
+* `losscalcsize` determines how often the losses of the whole dataset will be evaluated so that the training process can be analyzed afterwards
+* `plotProgress` shall the training be visualized, works only in Jupyter notebooks
+* `nPlotsample` number of sample points used for plotting
+
+"""
 function train_net(
     model::FluxModel,
     # Predictors, target and number of Epochs (y is still 1 variable only, can be changed to multioutput, but for us I don't see an urgent application)
@@ -70,6 +83,8 @@ function train_net(
     searchParams = Adam(model.weights; lr=0.01, beta1=0.9, beta2=0.95, t=1, eps=1e-6, fstm=zeros(model.weights), scndm=zeros(model.weights)),
     ### How often will be intermediate output given
     infoStepSize=100,
+    ## What fraction of the dataset shall be chosen for validation? Can be either a Float for a random fraction or vector of indices of omitted datasets
+    valiFrac=0.2,
     ### How often will the losses of the whole dataset be evaluated
     losscalcsize=20,
     ### Also graphical output via the react/interact interface?
@@ -93,7 +108,7 @@ function train_net(
     ## Split data set for cross-validation
     ## Could be parameterized in the function call later!!
     ## Also missing a full k-fold crossvalidation
-    trainIdx, valiIdx = split_data(nSamp, batchSize)
+    trainIdx, valiIdx, batchSize = split_data(nSamp, batchSize, valiFrac)
 
     xTrain, xVali     = xNorm[trainIdx],xNorm[valiIdx]
     yTrain, yVali     = yNorm[trainIdx],yNorm[valiIdx]
@@ -183,7 +198,7 @@ function predict_after_train(model::FluxModel, x)
     #istaskdone(model.trainTask) || error("Training not finished yet")
     xNorm, Y = normalize_data(model, x, nothing)
     yNorm = predict(model,model.weights, xNorm)
-    yPred = normalize_data_inv(model,y)
+    yPred = normalize_data_inv(model,yNorm)
 
     return yPred
 end
@@ -193,7 +208,7 @@ end
 function sampleRagged{T}(x::Vector{Matrix{T}},nsample)
     nel = map(i->Float64(length(i)-sum(isnan,i)),x)
     sum(nel) < nsample && (nsample=round(Int,sum(nel)))
-    isamp = sample(collect(1:length(x)),WeightVec(nel),nsample,replace=true)
+    isamp = sample(collect(1:length(x)),Weights(nel),nsample,replace=true)
     its   = map(i->rand(1:(length(x[i])-sum(isnan,x[i]))),isamp)
     goodvals = map(i->find(map(j->!isnan(j),i)),x)
     its2  = copy(its)
@@ -207,8 +222,17 @@ end
   [ragged_a[i][j] for (i,j) in samp]
 end
 
-function split_data(nSamp,batchSize)
-  valiFrac=0.2
+function split_data(nSamp, batchSize, valiIdx::Vector)
+  trainIdx = setdiff(1:nSamp,valiIdx)
+  if length(trainIdx) < batchSize
+      warn("Too few samples for batchSize $(batchSize)! BatchSize adjusted to full training size $(length(trainIdx))")
+      batchSize=length(trainIdx)
+  end
+  return trainIdx, copy(valiIdx), batchSize
+end
+
+function split_data(nSamp,batchSize,valiFrac::AbstractFloat)
+
   permut=shuffle(1:nSamp)
 
   valiNSamp = trunc(Int, valiFrac*nSamp)
@@ -225,7 +249,7 @@ function split_data(nSamp,batchSize)
       warn("Too few samples for batchSize $(batchSize)! BatchSize adjusted to full training size $(length(trainIdx))")
       batchSize=length(trainIdx)
   end
-  return trainIdx, valiIdx
+  return trainIdx, valiIdx, batchSize
 end
 
 function raggedToVector(raggedArray)
