@@ -5,3 +5,5 @@ Knet
 Compat
 Interact
 FixedSizeArrays
+Distributions
+DataFrames
