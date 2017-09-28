@@ -14,19 +14,20 @@ type LSTMModel <: FluxModel
   outputtimesteps::Vector{Int}
   lossesTrain::Vector{Float64}
   lossesVali::Vector{Float64}
-  yMin::Float64
-  yMax::Float64
+  yMin::Vector{Float64}
+  yMax::Vector{Float64}
   yNorm::Vector{Array{Float64,2}}
   xNorm::Vector{Array{Float64,2}}
   xMin::Vector{Float64}
   xMax::Vector{Float64}
+  n_dropout::Int64
 end
 
-function LSTMModel(nVar,nHid; dist = Uniform, forgetBias = 1)
+function LSTMModel(nVar,nHid; dist = Uniform, forgetBias = 1, nDropout=nHid ÷ 10)
   w=iniWeights(LSTMModel, nVar, nHid, dist, forgetBias)
   totalNweights=4*(nVar * nHid + nHid * nHid + nHid) + nHid + 1
   length(w) == totalNweights ||  error("Length of weights $(size(weights,1)) does not match needed length $totalNweights!")
-  LSTMModel(w,nHid,0,identity,Int[],Float64[],Float64[],NaN,NaN,[zeros(0,0)],[zeros(0,0)],Float64[],Float64[])
+  LSTMModel(w,nHid,0,identity,Int[],Float64[],Float64[],Float64[],Float64[],[zeros(0,0)],[zeros(0,0)],Float64[],Float64[],nDropout)
 end
 
 function iniWeights(::Type{LSTMModel}, nVarX::Int, nHid::Int, dist, forgetBias)
@@ -47,7 +48,7 @@ function iniWeights(::Type{LSTMModel}, nVarX::Int, nHid::Int, dist, forgetBias)
   weights = raggedToVector(weights)
 end
 
-function predict(model::LSTMModel,w,x)
+function predict(model::LSTMModel,w,x;record_hidden=false, hidAr=Matrix{Float64}[])
   nSamp = length(x)
   nVar  = size(x[1],1)
 
@@ -71,6 +72,9 @@ function predict(model::LSTMModel,w,x)
         state   = a .* igate + fgate .* state
         hidden  = tanh(state) .* ogate
         yout[i] = sigm(w13 * hidden + w14)[1]
+        if record_hidden
+            push!(hidAr,hidden)
+        end
     end
     yout
   end
@@ -86,6 +90,9 @@ function predict_with_gradient(model::LSTMModel,w, x,ytrue,lossFunc) ### This im
   @reshape_weights(w1=>(nHid,nVar),  w2=>(nHid,nHid), w3=>(nHid,1),    w4=>(nHid,nVar), w5=>(nHid,nHid),
                    w6=>(nHid,1),     w7=>(nHid,nVar), w8=>(nHid,nHid), w9=>(nHid,1),    w10=>(nHid,nVar),
                    w11=>(nHid,nHid), w12=>(nHid,1),   w13=>(1,nHid),   w14=>(1,1))
+
+  idropout = sample(1:nHid,model.n_dropout,replace=false)
+  w2[idropout,:]=0.0
 
   # Allocate additional arrays for derivative calculation
   dw1, dw4, dw7, dw10 = [zeros(size(w1)) for i=1:nSamp], [zeros(size(w4)) for i=1:nSamp], [zeros(size(w7)) for i=1:nSamp], [zeros(size(w10)) for i=1:nSamp]
@@ -170,7 +177,11 @@ function predict_with_gradient(model::LSTMModel,w, x,ytrue,lossFunc) ### This im
     end
   end
 
-  return -[reshape(sum(dw1), nVar*nHid); reshape(sum(dw2), nHid*nHid); reshape(sum(dw3), nHid);
+
+  dw2_2 = sum(dw2)
+  dw2_2[idropout,:]=0.0
+
+  return -[reshape(sum(dw1), nVar*nHid); reshape(dw2_2, nHid*nHid) ; reshape(sum(dw3), nHid);
   reshape(sum(dw4), nVar*nHid); reshape(sum(dw5), nHid*nHid); reshape(sum(dw6), nHid);
   reshape(sum(dw7), nVar*nHid); reshape(sum(dw8), nHid*nHid); reshape(sum(dw9), nHid);
   reshape(sum(dw10), nVar*nHid); reshape(sum(dw11), nHid*nHid); reshape(sum(dw12), nHid);
