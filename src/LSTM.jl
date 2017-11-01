@@ -93,6 +93,9 @@ function predict_with_gradient(model::LSTMModel,w, x,ytrue,lossFunc) ### This im
 
   idropout = sample(1:nHid,model.n_dropout,replace=false)
   w2[idropout,:]=0.0
+  w5[idropout,:]=0.0
+  w8[idropout,:]=0.0
+  w11[idropout,:]=0.0
 
   # Allocate additional arrays for derivative calculation
   dw1, dw4, dw7, dw10 = [zeros(size(w1)) for i=1:nSamp], [zeros(size(w4)) for i=1:nSamp], [zeros(size(w7)) for i=1:nSamp], [zeros(size(w10)) for i=1:nSamp]
@@ -177,9 +180,16 @@ function predict_with_gradient(model::LSTMModel,w, x,ytrue,lossFunc) ### This im
     end
   end
 
-
+  #Set derivatives of dropped out nodes to 0
   dw2_2 = sum(dw2)
+  dw5_2 = sum(dw5)
+  dw8_2 = sum(dw8)
+  dw11_2= sum(dw11)
   dw2_2[idropout,:]=0.0
+  dw5_2[idropout,:]=0.0
+  dw8_2[idropout,:]=0.0
+  dw11_2[idropout,:]=0.0
+
 
   return -[reshape(sum(dw1), nVar*nHid); reshape(dw2_2, nHid*nHid) ; reshape(sum(dw3), nHid);
   reshape(sum(dw4), nVar*nHid); reshape(sum(dw5), nHid*nHid); reshape(sum(dw6), nHid);
