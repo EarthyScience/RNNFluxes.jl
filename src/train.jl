@@ -32,8 +32,12 @@ end
 
 derivActivation(y,dy) = y.*(1-y).*dy # Maybe this should be matrix mult of dh * dh'
 derivActivation!(dest,hidden,dh) = for j=1:length(hidden) dest[j]=hidden[j]*(1-hidden[j])*dh[j] end
-deriv(::typeof(mseLoss),ytrue,ypred)=ytrue-ypred
-deriv(::typeof(mseLoss_old),ytrue,ypred)=ytrue-ypred
+#Define fallback method when only two arguments are given
+@inline deriv(f::Any,ytrue,ypred,i)=deriv(f,ytrue[i],ypred[i])
+
+#Define
+deriv(::typeof(mseLoss),ytrue,ypred,i)=ytrue[i]-ypred[i]
+deriv(::typeof(mseLoss_old),ytrue,ypred,i)=ytrue[i]-ypred[i]
 function sigm(xi::Number)
   if xi>=zero(xi)
     z=exp(-xi)
