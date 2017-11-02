@@ -129,7 +129,7 @@ function predict_with_gradient(model::LSTMModel,w, x,ytrue,lossFunc) ### This im
     for i=nTimes:-1:1
 
       # Derivative of the loss function
-      dy = deriv(lossFunc,yy[i],ypred[i])
+      dy = deriv(lossFunc,yy,ypred,i)
       # Derivative of the activations function (still a scalar)
       dy2 = [derivActivation(ypred[i],dy)]
       dw13[s] += dy2[1] * out[i+1]'

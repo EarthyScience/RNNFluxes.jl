@@ -94,7 +94,7 @@ function predict_with_gradient(m::RNNModel,w, x,ytrue,lossFunc) ### This impleme
     for i=nTimes:-1:1
 
       # Derivative of the loss function
-      dy = deriv(lossFunc,ys[i],ypred[i])
+      dy = deriv(lossFunc,ys,ypred,i)
 
       # Derivative of the activations function (still a scalar)
       dy2 = derivActivation(ypred[i],dy)
