@@ -11,7 +11,8 @@ makedocs(
       "Manual" => Any[
         "quickstart.md",
         "models.md",
-        "training.md"
+        "training.md",
+        "example_lossfunctions.md"
       ]
     ]
 )

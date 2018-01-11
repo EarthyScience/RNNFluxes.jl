@@ -14,6 +14,7 @@ Pages = [
     "quickstart.md",
     "training.md",
     "models.md",
+    "example_lossfunctions.md"
 ]
 Depth = 1
 ```
