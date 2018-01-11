@@ -50,9 +50,9 @@ function predict(model::GRUModel,w,x)
 
   nHid = model.nHid
   @reshape_weights(w1=>(nHid,nVar), w2=>(nHid,nHid), w3=>(nHid,1),
-                  w4=>(nHid,nVar), w5=>(nHid,nHid), w6=>(nHid,1),
-                  w7=>(nHid,nVar), w8=>(nHid,nHid), w9=>(nHid,1),
-                  w10=>(1,nHid),   w11=>(1,1))
+  w4=>(nHid,nVar), w5=>(nHid,nHid), w6=>(nHid,1),
+  w7=>(nHid,nVar), w8=>(nHid,nHid), w9=>(nHid,1),
+  w10=>(1,nHid),   w11=>(1,1))
 
   # This loop was rewritten using map so that one can easily switch to pmap later
   ypred = map(x) do xx
@@ -62,11 +62,11 @@ function predict(model::GRUModel,w,x)
     hidden = zeros(eltype(w[1]), nHid, 1)
     state  = copy(hidden)
     for i=1:nTimes
-        zgate   = sigm(w1 * xx[:,i:i] + w2 * hidden + w3)
-        rgate   = sigm(w4 * xx[:,i:i] + w5 * hidden + w6)
-        state   = tanh(w7 * xx[:,i:i] + w8 * (hidden .* rgate) + w9)
-        hidden   = hidden .* zgate + (1 .- zgate) .* state
-        yout[i] = sigm(w10 * hidden + w11)[1]
+      zgate   = sigm(w1 * xx[:,i:i] + w2 * hidden + w3)
+      rgate   = sigm(w4 * xx[:,i:i] + w5 * hidden + w6)
+      state   = tanh(w7 * xx[:,i:i] + w8 * (hidden .* rgate) + w9)
+      hidden   = hidden .* zgate + (1 .- zgate) .* state
+      yout[i] = sigm(w10 * hidden + w11)[1]
     end
     yout
   end
@@ -117,7 +117,7 @@ function predict_with_gradient(model::GRUModel,w, x,ytrue,lossFunc) ### This imp
   nHid = model.nHid
 
   @reshape_weights(w1=>(nHid,nVar),  w2=>(nHid,nHid), w3=>(nHid,1),    w4=>(nHid,nVar), w5=>(nHid,nHid),
-                   w6=>(nHid,1),  w7=>(nHid,nVar), w8=>(nHid,nHid), w9=>(nHid,1), w10=>(1,nHid), w11=>(1,1))
+  w6=>(nHid,1),  w7=>(nHid,nVar), w8=>(nHid,nHid), w9=>(nHid,1), w10=>(1,nHid), w11=>(1,1))
 
   # Allocate additional arrays for derivative calculation
   ypred=Array{typeof(w1[1])}(nTimes, nSamp)
@@ -133,11 +133,11 @@ function predict_with_gradient(model::GRUModel,w, x,ytrue,lossFunc) ### This imp
     dZGate, dRGate, dState = zeros(nTimes+1,nHid), zeros(nTimes+1,nHid), zeros(nTimes+1,nHid)
 
     for i=1:nTimes
-        zgate[i,:]   = sigm(w1 * x[s][:,i:i] + w2 * hidden[i ,:] + w3)
-        rgate[i,:]   = sigm(w4 * x[s][:,i:i] + w5 * hidden[i ,:] + w6)
-        state[i,:]   = tanh(w7 * x[s][:,i:i] + w8 * (hidden[i ,:] .* rgate[i ,:]) + w9)
-        hidden[i+1,:]= hidden[i ,:] .* zgate[i,:] + (1 .- zgate[i ,:]) .* state[i ,:]
-        ypred[i,s] = sigm(w10 * hidden[i+1,:] + w11)[1]
+      zgate[i,:]   = sigm(w1 * x[s][:,i:i] + w2 * hidden[i ,:] + w3)
+      rgate[i,:]   = sigm(w4 * x[s][:,i:i] + w5 * hidden[i ,:] + w6)
+      state[i,:]   = tanh(w7 * x[s][:,i:i] + w8 * (hidden[i ,:] .* rgate[i ,:]) + w9)
+      hidden[i+1,:]= hidden[i ,:] .* zgate[i,:] + (1 .- zgate[i ,:]) .* state[i ,:]
+      ypred[i,s] = sigm(w10 * hidden[i+1,:] + w11)[1]
     end
 
     # Run the derivative backward pass

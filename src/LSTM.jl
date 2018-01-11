@@ -1,10 +1,20 @@
-import Base.LinAlg: gemv!
+import Base.LinAlg.BLAS: gemv!, gemm!
 using Distributions
 
 """
-    type LSTM
+    type LSTMModel
 
-Implementation of an LSTM.
+Implementation of an LSTM with handcoded gradients. It has the following constructor:
+
+    LSTMModel(nVar,nHid; dist = Uniform, forgetBias = 1, nDropout=nHid ÷ 10)
+
+### Parameters
+
+* `nVar` number of input (predictor) variables for each time step
+* `nHid` number of hidden nodes contained in the LSTM
+* `dist` distribution to generate initial Weights, currently `Uniform` and `Normal` are supported, defaults to `Uniform`
+* `forgetBias` determine bias of generating forget bias weights, defaults to 1
+* `nDropOut` number of dropout nodes for each prediction, defaults to 10% of the nodes
 """
 type LSTMModel <: FluxModel
   weights::Vector{Float64}
@@ -48,48 +58,65 @@ function iniWeights(::Type{LSTMModel}, nVarX::Int, nHid::Int, dist, forgetBias)
   weights = raggedToVector(weights)
 end
 
-function predict(model::LSTMModel,w,x;record_hidden=false, hidAr=Matrix{Float64}[])
+function predict(model::LSTMModel,w,x)#;record_hidden::Bool=false, hidAr::Vector{Matrix{Float64}}=Matrix{Float64}[])
   nSamp = length(x)
   nVar  = size(x[1],1)
 
   nHid = model.nHid
   @reshape_weights(w1=>(nHid,nVar),  w2=>(nHid,nHid), w3=>(nHid,1),    w4=>(nHid,nVar), w5=>(nHid,nHid),
-                   w6=>(nHid,1),     w7=>(nHid,nVar), w8=>(nHid,nHid), w9=>(nHid,1),    w10=>(nHid,nVar),
-                   w11=>(nHid,nHid), w12=>(nHid,1),   w13=>(1,nHid),   w14=>(1,1))
+  w6=>(nHid,1),     w7=>(nHid,nVar), w8=>(nHid,nHid), w9=>(nHid,1),    w10=>(nHid,nVar),
+  w11=>(nHid,nHid), w12=>(nHid,1),   w13=>(1,nHid),   w14=>(1,1))
 
   # This loop was rewritten using map so that one can easily switch to pmap later
-  ypred = map(x) do xx
+  ypred = Vector{Float64}[]
+
+
+
+  for xx in x
 
     nTimes = size(xx,2)
     yout   = zeros(nTimes)
     hidden = zeros(eltype(w[1]),nHid, 1)
+    out,state   = zeros(nHid),zeros(nHid),zeros(nHid),zeros(nHid)
+    state  = zeros(nHid)
+    input, igate, fgate, ogate = zeros(nHid),zeros(nHid),zeros(nHid),zeros(nHid)
+    xHelp         = zeros(nHid)
     state  = copy(hidden)
     for i=1:nTimes
-        a       = tanh(w1 * xx[:,i:i] + w2 * hidden + w3)
-        igate   = sigm(w4 * xx[:,i:i] + w5 * hidden + w6)
-        fgate   = sigm(w7 * xx[:,i:i] + w8 * hidden + w9)
-        ogate   = sigm(w10 *xx[:,i:i] + w11 * hidden + w12)
-        state   = a .* igate + fgate .* state
-        hidden  = tanh(state) .* ogate
-        yout[i] = sigm(w13 * hidden + w14)[1]
-        if record_hidden
-            push!(hidAr,hidden)
-        end
+      xslice      = xx[:,i]
+      @chain_matmulv_add(xHelp.=w1  * xslice + w2  * out + w3 ); map!(tanh,input,xHelp); fill!(xHelp,0.0)
+      @chain_matmulv_add(xHelp.=w4  * xslice + w5  * out + w6 ); map!(sigm,igate,xHelp); fill!(xHelp,0.0)
+      @chain_matmulv_add(xHelp.=w7  * xslice + w8  * out + w9 ); map!(sigm,fgate,xHelp); fill!(xHelp,0.0)
+      @chain_matmulv_add(xHelp.=w10 * xslice + w11 * out + w12); map!(sigm,ogate,xHelp); fill!(xHelp,0.0)
+      @inbounds for j=1:nHid
+        out[j]   = tanh(state[j]) * ogate[j]
+        state[j] = input[j] * igate[j] + fgate[j] * state[j]
+      end
+      yout[i]    = sigm(dot(w13,out) + w14[1])
     end
-    yout
+    push!(ypred,yout)
   end
   ypred
 end
 
-function predict_with_gradient(model::LSTMModel,w, x,ytrue,lossFunc) ### This implements w as a vector
+
+
+function predict_with_gradient{T}(model::LSTMModel,w::AbstractVector{T}, x,ytrue,lossFunc) ### This implements w as a vector
   nSamp = length(x)
 
   nVar = size(x[1],1)
   nHid = model.nHid
 
   @reshape_weights(w1=>(nHid,nVar),  w2=>(nHid,nHid), w3=>(nHid,1),    w4=>(nHid,nVar), w5=>(nHid,nHid),
-                   w6=>(nHid,1),     w7=>(nHid,nVar), w8=>(nHid,nHid), w9=>(nHid,1),    w10=>(nHid,nVar),
-                   w11=>(nHid,nHid), w12=>(nHid,1),   w13=>(1,nHid),   w14=>(1,1))
+  w6=>(nHid,1),     w7=>(nHid,nVar), w8=>(nHid,nHid), w9=>(nHid,1),    w10=>(nHid,nVar),
+  w11=>(nHid,nHid), w12=>(nHid,1),   w13=>(1,nHid),   w14=>(1,1))
+
+  # println(macroexpand(:(@reshape_weights(w1=>(nHid,nVar),  w2=>(nHid,nHid), w3=>(nHid,1),    w4=>(nHid,nVar), w5=>(nHid,nHid),
+  #                  w6=>(nHid,1),     w7=>(nHid,nVar), w8=>(nHid,nHid), w9=>(nHid,1),    w10=>(nHid,nVar),
+  #                  w11=>(nHid,nHid), w12=>(nHid,1),   w13=>(1,nHid),   w14=>(1,1)))))
+
+  #println(isdefined(:w1))
+  #println(isdefined(:w2))
 
   idropout = sample(1:nHid,model.n_dropout,replace=false)
   w2[idropout,:]=0.0
@@ -99,10 +126,7 @@ function predict_with_gradient(model::LSTMModel,w, x,ytrue,lossFunc) ### This im
   w13[:,idropout]=0.0
 
   # Allocate additional arrays for derivative calculation
-  dw1, dw4, dw7, dw10 = [zeros(size(w1)) for i=1:nSamp], [zeros(size(w4)) for i=1:nSamp], [zeros(size(w7)) for i=1:nSamp], [zeros(size(w10)) for i=1:nSamp]
-  dw2, dw5, dw8, dw11 = [zeros(size(w2)) for i=1:nSamp], [zeros(size(w5)) for i=1:nSamp], [zeros(size(w8)) for i=1:nSamp], [zeros(size(w11)) for i=1:nSamp]
-  dw3, dw6, dw9, dw12 = [zeros(size(w3)) for i=1:nSamp], [zeros(size(w6)) for i=1:nSamp], [zeros(size(w9)) for i=1:nSamp], [zeros(size(w12)) for i=1:nSamp]
-  dw13, dw14 = [zeros(size(w13)) for i=1:nSamp], [zeros(size(w14)) for i=1:nSamp]
+  @allocate_dw w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 w14
 
   foreach(x,ytrue,1:nSamp) do xx,yy,s
     nTimes = size(xx,2)
@@ -114,17 +138,17 @@ function predict_with_gradient(model::LSTMModel,w, x,ytrue,lossFunc) ### This im
     input, igate, fgate, ogate = [zeros(nHid) for i=1:nTimes],[zeros(nHid) for i=1:nTimes],[zeros(nHid) for i=1:nTimes+1],[zeros(nHid) for i=1:nTimes]
 
     for i=1:nTimes
-        xslice      = xx[:,i]
-        @chain_matmulv_add(xHelp.=w1  * xslice + w2  * out[i] + w3 ); map!(tanh,input[i],xHelp); fill!(xHelp,0.0)
-        @chain_matmulv_add(xHelp.=w4  * xslice + w5  * out[i] + w6 ); map!(sigm,igate[i],xHelp); fill!(xHelp,0.0)
-        @chain_matmulv_add(xHelp.=w7  * xslice + w8  * out[i] + w9 ); map!(sigm,fgate[i],xHelp); fill!(xHelp,0.0)
-        @chain_matmulv_add(xHelp.=w10 * xslice + w11 * out[i] + w12); map!(sigm,ogate[i],xHelp); fill!(xHelp,0.0)
-        input1,igate1,fgate1,ogate1,state1,out2,state2 = input[i],igate[i],fgate[i],ogate[i],state[i],out[i+1],state[i+1]
-        @inbounds for j=1:nHid
-          state2[j] = input1[j] * igate1[j] + fgate1[j] * state1[j]
-          out2[j]   = tanh(state2[j]) * ogate1[j]
-        end
-        ypred[i]    = sigm(dot(w13,out[i+1]) + w14[1])
+      xslice      = xx[:,i]
+      @chain_matmulv_add(xHelp.=w1  * xslice + w2  * out[i] + w3 ); map!(tanh,input[i],xHelp); fill!(xHelp,0.0)
+      @chain_matmulv_add(xHelp.=w4  * xslice + w5  * out[i] + w6 ); map!(sigm,igate[i],xHelp); fill!(xHelp,0.0)
+      @chain_matmulv_add(xHelp.=w7  * xslice + w8  * out[i] + w9 ); map!(sigm,fgate[i],xHelp); fill!(xHelp,0.0)
+      @chain_matmulv_add(xHelp.=w10 * xslice + w11 * out[i] + w12); map!(sigm,ogate[i],xHelp); fill!(xHelp,0.0)
+      input1,igate1,fgate1,ogate1,state1,out2,state2 = input[i],igate[i],fgate[i],ogate[i],state[i],out[i+1],state[i+1]
+      @inbounds for j=1:nHid
+        state2[j] = input1[j] * igate1[j] + fgate1[j] * state1[j]
+        out2[j]   = tanh(state2[j]) * ogate1[j]
+      end
+      ypred[i]    = sigm(dot(w13,out[i+1]) + w14[1])
     end
 
     dInput1, dIgate1,dFgate1,dOgate1 = dInput[nTimes+1],dIgate[nTimes+1],dFgate[nTimes+1],dOgate[nTimes+1]
@@ -135,12 +159,16 @@ function predict_with_gradient(model::LSTMModel,w, x,ytrue,lossFunc) ### This im
       # Derivative of the loss function
       dy = deriv(lossFunc,yy,ypred,i)
       # Derivative of the activations function (still a scalar)
-      dy2 = [derivActivation(ypred[i],dy)]
-      dw13[s] += dy2[1] * out[i+1]'
-      dw14[s][1] += dy2[1]
+      dy2 = derivActivation(ypred[i],dy)
+
+      dw13_s = dw13[s]; out_i1 = out[i+1]
+      @inbounds for j=1:nHid
+        dw13_s[j] += dy2 * out_i1[j]
+      end
+      dw14[s][1] += dy2
 
       dOut[:]=0.0
-      @chain_matmulv_add(dOut .= w13' * dy2 + w2' * dInput1 + w5' * dIgate1 + w8' * dFgate1 + w11' * dOgate1) ## Most important line
+      @chain_matmulv_add(dOut .= w13' * [dy2] + w2' * dInput1 + w5' * dIgate1 + w8' * dFgate1 + w11' * dOgate1) ## Most important line
 
       # Update hidden weights
       if i<nTimes

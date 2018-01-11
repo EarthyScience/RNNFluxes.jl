@@ -1,7 +1,15 @@
 """
     type RNN
 
-Implementation of an RNN.
+Implementation of an RNN with handcoded gradients.
+
+    RNNModel(nVar,nHid;dist=Uniform)
+
+### Parameters
+
+* `nVar` number of input (predictor) variables for each time step
+* `nHid` number of hidden nodes contained in the RNN
+* `dist` distribution to generate initial Weights, currently `Uniform` and `Normal` are supported, defaults to `Uniform`
 """
 type RNNModel <: FluxModel
   weights::Vector{Float64}
@@ -11,8 +19,8 @@ type RNNModel <: FluxModel
   outputtimesteps::Vector{Int}
   lossesTrain::Vector{Float64}
   lossesVali::Vector{Float64}
-  yMin::Float64
-  yMax::Float64
+  yMin::Vector{Float64}
+  yMax::Vector{Float64}
   yNorm::Vector{Matrix{Float64}}
   xNorm::Vector{Matrix{Float64}}
   xMin::Vector{Float64}
@@ -23,7 +31,7 @@ function RNNModel(nVar,nHid;dist=Uniform)
   w=iniWeights(RNNModel,nVar,nHid,dist)
   totalNweights=nVar*nHid + nHid * nHid + 2*nHid + 1
   length(w) == totalNweights ||  error("Length of weights $(size(weights,1)) does not match needed length $totalNweights!")
-  RNNModel(w,nHid,0,identity,Int[],Float64[],Float64[],NaN,NaN,[zeros(0,0)],[zeros(0,0)],Float64[],Float64[])
+  RNNModel(w,nHid,0,identity,Int[],Float64[],Float64[],Float64[],Float64[],[zeros(0,0)],[zeros(0,0)],Float64[],Float64[])
 end
 
 function iniWeights(::Type{RNNModel},nVarX::Int, nHid::Int, dist)
@@ -68,14 +76,14 @@ function RNN_init_pred(model::RNNModel,w,x)
   return nSamp,nVar,nHid,w1,w2,w3,w4,w5,hidden_pre,xw1,hidprew2,xcur
 end
 
-function predict_with_gradient(m::RNNModel,w, x,ytrue,lossFunc) ### This implements w as a vector
+function predict_with_gradient{T}(m::RNNModel,w::AbstractArray{T}, x,ytrue,lossFunc) ### This implements w as a vector
 
   # Reshape weight vectors and create temp arrays
   nSamp,nVar,nHid,w1,w2,w3,w4,w5,hidden_pre,xw1,hidprew2,xcur = RNN_init_pred(m,w,x)
 
   # Allocate additional arrays for derivative calculation
-  dWxh, dWhh, dWhy = [zeros(size(w1)) for i=1:nSamp], [zeros(size(w2)) for i=1:nSamp], [zeros(size(w3)) for i=1:nSamp]
-  dbh, dby         = [zeros(size(w4)) for i=1:nSamp], [zeros(size(w5)) for i=1:nSamp]
+  dWxh, dWhh, dWhy = Matrix{T}[zeros(size(w1)) for i=1:nSamp], Matrix{T}[zeros(size(w2)) for i=1:nSamp], Matrix{T}[zeros(size(w3)) for i=1:nSamp]
+  dbh, dby         = Matrix{T}[zeros(size(w4)) for i=1:nSamp], Vector{T}[zeros(size(w5)) for i=1:nSamp]
   dhnext           = zeros(Float64,1,nHid)
   dh               = zeros(nHid,1)
   dhraw            = zeros(nHid,1)
@@ -148,30 +156,30 @@ end
 
 function RNN_predict_loop(nTimes,nVar,nHid,hidden,hidden_pre,hidprew2,ypred,xcur,xs,xw1,w1,w2,w3,w4,w5)
 
-    #Emtpy temporary arrays
-    fill!(hidden,zero(eltype(hidden)))
-    fill!(hidden_pre,zero(eltype(hidden_pre)))
+  #Emtpy temporary arrays
+  fill!(hidden,zero(eltype(hidden)))
+  fill!(hidden_pre,zero(eltype(hidden_pre)))
 
-    for i=1:nTimes
+  for i=1:nTimes
 
-      # First copy current x variables to xcur
-      for j=1:nVar xcur[j]=xs[j,i] end
+    # First copy current x variables to xcur
+    for j=1:nVar xcur[j]=xs[j,i] end
 
-      #Then calculate x * w1 and hidden[:,:,i-1]*w2
-      A_mul_B!(xw1,xcur,w1)
-      A_mul_B!(hidprew2,hidden_pre,w2)
+    #Then calculate x * w1 and hidden[:,:,i-1]*w2
+    A_mul_B!(xw1,xcur,w1)
+    A_mul_B!(hidprew2,hidden_pre,w2)
 
-      #Add both together and apply activation function
-      @inbounds for j=1:nHid
-        hidden[1,j,i]=sigm(xw1[j]+hidprew2[j]+w4[j])
-      end
-
-      #Store hidden state in hidden_pre matrix
-      copy!(hidden_pre,1,hidden,nHid*(i-1)+1,nHid)
-
-      #Calculate prediction through hidden*w3+w5
-      ypred[i] = sigm(dot(hidden_pre,w3) + w5[1])
+    #Add both together and apply activation function
+    @inbounds for j=1:nHid
+      hidden[1,j,i]=sigm(xw1[j]+hidprew2[j]+w4[j])
     end
+
+    #Store hidden state in hidden_pre matrix
+    copy!(hidden_pre,1,hidden,nHid*(i-1)+1,nHid)
+
+    #Calculate prediction through hidden*w3+w5
+    ypred[i] = sigm(dot(hidden_pre,w3) + w5[1])
+  end
 
 end
 

@@ -6,9 +6,9 @@ macro reshape_weights(inputs...)
   fin_ex  = 0
 
   for i=1:length(inputs)
-    scur=inputs[i].args[2]
+    scur=inputs[i].args[3]
     !isa(scur,Expr) && (scur=Expr(:tuple,scur))
-    wsym=esc(inputs[i].args[1])
+    wsym=esc(inputs[i].args[2])
     winsym = esc(:w)
     mul_sizes = Expr(:call,:*,map(esc,scur.args)...)
     fin_ex=:($fin_ex + $mul_sizes)
@@ -23,21 +23,23 @@ end
 #Update the vector y as alpha*A*x + beta*y or alpha*A'x + beta*y according to tA (transpose A). Returns the updated y.
 macro chain_matmulv_add(ex)
   ex.head==:(.=) || error("Wrong format. Input expression must be assignment with .=")
-  outAr = ex.args[1]
+  outAr = esc(ex.args[1])
   ex = ex.args[2]
   (ex.head==:call && ex.args[1]==:(+)) || error("Wrong input format, right-hand side must be a sum")
   outEx = quote end
   for a in ex.args[2:end]
     if isa(a,Symbol)
-      push!(outEx.args,:(vec_add!($outAr,$a)))
+      push!(outEx.args,:(vec_add!($outAr,$(esc(a)))))
     elseif a.head==:call && a.args[1]==:(*)
       matsym = a.args[2]
       t='N'
       if isa(matsym,Expr)
         t='T'
-        matsym=matsym.args[1]
+        matsym=esc(matsym.args[1])
+      else
+        matsym=esc(matsym)
       end
-      vecsym = a.args[3]
+      vecsym = esc(a.args[3])
       push!(outEx.args,:(gemv!($t,1.0,$matsym,$vecsym,1.0,$outAr)))
     else
       error("Unknown operand")
@@ -46,7 +48,17 @@ macro chain_matmulv_add(ex)
   outEx
 end
 
-macroexpand(:(@chain_matmulv_add dOut.=w1*x+w2*y+w3'*z+w4))
+function f_allocate_dw(ex::Symbol)
+    exOut = esc(Symbol(string("d",ex)))
+    return :($exOut = [zeros(size($(esc(ex)))) for i=1:$(esc(:nSamp))])
+end
+macro allocate_dw(ex...)
+    all(i->isa(i,Symbol),ex) || error("Need symbols as inputs")
+    o = Expr(:block,map(f_allocate_dw,ex)...)
+    o
+end
+
+#macroexpand(:(@chain_matmulv_add dOut.=w1*x+w2*y+w3'*z+w4))
 
 "Adds vectors a and b and stores the result in a"
 function vec_add!(a,b)

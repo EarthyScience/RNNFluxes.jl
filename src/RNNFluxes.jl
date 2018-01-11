@@ -1,9 +1,11 @@
-#__precompile__()
+__precompile__()
 
 module RNNFluxes
 using Interact
 
-include("update.jl")
+import Knet: Sgd, Momentum, Nesterov, Adagrad, Adadelta, Rmsprop, Adam
+
+#include("update.jl")
 include("plotProgress.jl")
 include("train.jl")
 include("RNN.jl")
