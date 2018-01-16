@@ -1,7 +1,6 @@
 #__precompile__()
 
 module RNNFluxes
-using Interact
 
 import Knet: Sgd, Momentum, Nesterov, Adagrad, Adadelta, Rmsprop, Adam
 
