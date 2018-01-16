@@ -1,6 +1,5 @@
 import Plots: plot, gr, default, @layout
 export plotSummary
-default(show=:inline)
 function plotSignal(outputsteps,lossesTrain, lossesVali, predTrain, yTrain,predVali,yVali)
   epIdx=outputsteps
 
