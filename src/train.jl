@@ -1,11 +1,8 @@
 import Plots: scatter!, plot
-import Reactive: Signal, value
-import Interact: checkbox
 import StatsBase: sample
 import StatsBase: Weights
 export iniWeights, train_net, predict_after_train, loadSeasonal, RNNModel
 import Knet: update!
-#import Interact: checkbox
 ### Predict function using the ragged Array directly (deprecated)
 include("helper_macros.jl")
 
@@ -84,7 +81,7 @@ function train_net(
   valiFrac=0.2,
   ### How often will the losses of the whole dataset be evaluated
   losscalcsize=20,
-  ### Also graphical output via the react/interact interface?
+  ### Also graphical output?
   plotProgress=false,
   ### How many to plot in MOD vs OBS scatter plot
   nPlotsample=2000
