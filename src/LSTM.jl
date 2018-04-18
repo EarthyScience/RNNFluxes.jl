@@ -77,7 +77,7 @@ function predict(model::LSTMModel,w,x)#;record_hidden::Bool=false, hidAr::Vector
     nTimes = size(xx,2)
     yout   = zeros(nTimes)
     hidden = zeros(eltype(w[1]),nHid, 1)
-    out,state   = zeros(nHid),zeros(nHid),zeros(nHid),zeros(nHid)
+    out,state   = zeros(nHid),zeros(nHid)
     state  = zeros(nHid)
     input, igate, fgate, ogate = zeros(nHid),zeros(nHid),zeros(nHid),zeros(nHid)
     xHelp         = zeros(nHid)
@@ -89,8 +89,74 @@ function predict(model::LSTMModel,w,x)#;record_hidden::Bool=false, hidAr::Vector
       @chain_matmulv_add(xHelp.=w7  * xslice + w8  * out + w9 ); map!(sigm,fgate,xHelp); fill!(xHelp,0.0)
       @chain_matmulv_add(xHelp.=w10 * xslice + w11 * out + w12); map!(sigm,ogate,xHelp); fill!(xHelp,0.0)
       @inbounds for j=1:nHid
-        out[j]   = tanh(state[j]) * ogate[j]
         state[j] = input[j] * igate[j] + fgate[j] * state[j]
+        out[j]   = tanh(state[j]) * ogate[j]
+      end
+      yout[i]    = sigm(dot(w13,out) + w14[1])
+    end
+    push!(ypred,yout)
+  end
+  ypred
+end
+
+export predict_record_hidden
+"""
+    predict_record_hidden(model::LSTMModel,x::Matrix)
+
+Records the state of the hidden nodes of the LSTM on a single multivariate input time series `x`
+and returns them as a (ntime,nHidden) Matrix.
+"""
+function predict_record_hidden(model::LSTMModel,x::Matrix)
+  hidAr = zeros(model.nHid,size(x,2))
+  y = predict_slow(model,model.weights,[x],record_hidden=true,hidAr=hidAr)
+  hidAr
+end
+import ForwardDiff
+export predict_input_gradient
+"""
+    predict_input_gradient(model::LSTMModel,x::Matrix)
+
+Returns the Jacobian of the predicted output of `model` with respect to its multivariate input time series `x` 
+"""
+function predict_input_gradient(model::LSTMModel,x::Matrix)
+  ForwardDiff.jacobian(d->predict_slow(model,model.weights,[d])[1],x)
+end
+
+function predict_slow(model::LSTMModel,w::Vector,x;record_hidden::Bool=false, hidAr::Matrix{Float64}=zeros(0,0))
+  nSamp = length(x)
+  nVar  = size(x[1],1)
+  T=typeof(x[1][1]*w[1])
+  nHid = model.nHid
+  @reshape_weights(w1=>(nHid,nVar),  w2=>(nHid,nHid), w3=>(nHid,1),    w4=>(nHid,nVar), w5=>(nHid,nHid),
+  w6=>(nHid,1),     w7=>(nHid,nVar), w8=>(nHid,nHid), w9=>(nHid,1),    w10=>(nHid,nVar),
+  w11=>(nHid,nHid), w12=>(nHid,1),   w13=>(nHid),   w14=>(1,1))
+
+  # This loop was rewritten using map so that one can easily switch to pmap later
+  ypred = Vector{T}[]
+
+
+  for xx in x
+
+    nTimes = size(xx,2)
+    yout   = zeros(T,nTimes)
+    hidden = zeros(T,nHid, 1)
+    out,state   = zeros(T,nHid),zeros(T,nHid)
+    state  = zeros(T,nHid)
+    input, igate, fgate, ogate = zeros(T,nHid),zeros(T,nHid),zeros(T,nHid),zeros(T,nHid)
+    xHelp         = zeros(T,nHid)
+    state  = copy(hidden)
+    for i=1:nTimes
+      xslice      = xx[:,i]
+      input = tanh.(w1 * xslice + w2 * out + w3)
+      igate = sigm.(w4 * xslice + w5 * out + w6)
+      fgate = sigm.(w7 * xslice + w8 * out + w9)
+      ogate = sigm.(w10* xslice + w11* out + w12)
+      @inbounds for j=1:nHid
+        state[j] = input[j] * igate[j] + fgate[j] * state[j]
+        out[j]   = tanh(state[j]) * ogate[j]
+      end
+      if record_hidden
+        hidAr[:,i] = state
       end
       yout[i]    = sigm(dot(w13,out) + w14[1])
     end

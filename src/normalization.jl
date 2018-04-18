@@ -22,10 +22,7 @@ function normalize_data(model::FluxModel,x,newmin,newmax,xMin,xMax)
     xMin,xMax=zeros(size(xall,1)),zeros(size(xall,1))
     for i=1:size(xall,1)
       xv = xall[i,:]
-      xMin[i],xMax[i]=quantile(filter(isfinite,xv),[0.01,0.99])
-      xr = xMax[i]-xMin[i]
-      xMin[i]=xMin[i]-xr/10
-      xMax[i]=xMax[i]+xr/10
+      xMin[i],xMax[i]=extrema(filter(isfinite,xv))
     end
   end
   xNorm=deepcopy(x)
