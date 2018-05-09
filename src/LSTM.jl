@@ -70,7 +70,12 @@ function predict(model::LSTMModel,w,x)#;record_hidden::Bool=false, hidAr::Vector
   # This loop was rewritten using map so that one can easily switch to pmap later
   ypred = Vector{Float64}[]
 
-
+  idropout = sample(1:nHid,model.n_dropout,replace=false)
+  w2[idropout,:]=0.0
+  w5[idropout,:]=0.0
+  w8[idropout,:]=0.0
+  w11[idropout,:]=0.0
+  w13[:,idropout]=0.0
 
   for xx in x
 
@@ -106,9 +111,10 @@ export predict_record_hidden
 Records the state of the hidden nodes of the LSTM on a single multivariate input time series `x`
 and returns them as a (ntime,nHidden) Matrix.
 """
-function predict_record_hidden(model::LSTMModel,x::Matrix)
+function predict_record_hidden(model::LSTMModel,x::Matrix,exclude_dropouts=false)
   hidAr = zeros(model.nHid,size(x,2))
-  y = predict_slow(model,model.weights,[x],record_hidden=true,hidAr=hidAr)
+  xNorm, Y = normalize_data(model, [x], nothing)
+  y = predict_slow(model,model.weights,xNorm,record_hidden=true,hidAr=hidAr,exclude_dropouts=exclude_dropouts)
   hidAr
 end
 import ForwardDiff
@@ -116,13 +122,41 @@ export predict_input_gradient
 """
     predict_input_gradient(model::LSTMModel,x::Matrix)
 
-Returns the Jacobian of the predicted output of `model` with respect to its multivariate input time series `x` 
+Returns the Jacobian of the predicted output of `model` with respect to its multivariate input time series `x`
 """
 function predict_input_gradient(model::LSTMModel,x::Matrix)
-  ForwardDiff.jacobian(d->predict_slow(model,model.weights,[d])[1],x)
+  xNorm, Y = normalize_data(model, [x], nothing)
+  ForwardDiff.jacobian(xNorm[1]) do d
+    yNorm = predict_slow(model,model.weights,[d])
+    normalize_data_inv(model,yNorm)[1]
+  end
+
 end
 
-function predict_slow(model::LSTMModel,w::Vector,x;record_hidden::Bool=false, hidAr::Matrix{Float64}=zeros(0,0))
+immutable NoDropouts end
+immutable ScaleLayers
+  scalefac::Float64
+end
+immutable DropoutLikeTraining end
+apply_dropouts!(::NoDropouts,x...)=nothing
+function apply_dropouts!(::DropoutLikeTraining,ndrop,w2,w5,w8,w11,w13)
+  nHid=size(w2,1)
+  idropout = sample(1:nHid,ndrop,replace=false)
+  w2[idropout,:]=0.0
+  w5[idropout,:]=0.0
+  w8[idropout,:]=0.0
+  w11[idropout,:]=0.0
+  w13[idropout]=0.0
+end
+function apply_dropouts!(s::ScaleLayers,ndrop,w...)
+  foreach(w) do iw
+    scale!(iw,s.scalefac)
+  end
+end
+
+
+
+function predict_slow(model::LSTMModel,w::Vector,x;record_hidden::Bool=false, hidAr::Matrix{Float64}=zeros(0,0),droptech = DropoutLikeTraining())
   nSamp = length(x)
   nVar  = size(x[1],1)
   T=typeof(x[1][1]*w[1])
@@ -134,6 +168,7 @@ function predict_slow(model::LSTMModel,w::Vector,x;record_hidden::Bool=false, hi
   # This loop was rewritten using map so that one can easily switch to pmap later
   ypred = Vector{T}[]
 
+  apply_dropouts!(droptech,model.n_dropout,w2,w5,w8,w11,w13)
 
   for xx in x
 
