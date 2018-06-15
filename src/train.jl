@@ -84,7 +84,10 @@ function train_net(
   ### Also graphical output?
   plotProgress=false,
   ### How many to plot in MOD vs OBS scatter plot
-  nPlotsample=2000
+  nPlotsample=2000,
+  max_patience = 20,
+  best_val_cost = typemax(Float64),
+  counter = 0
   )
 
   nSamp = length(x)
@@ -108,6 +111,7 @@ function train_net(
   yTrain, yVali     = yNorm[trainIdx],yNorm[valiIdx]
 
   w = model.weights
+  best_w = copy(w)
 
   info("Starting training....")
   info( length(trainIdx), " Training samples, ",  length(valiIdx), " Validation samples. " )
@@ -150,13 +154,25 @@ function train_net(
     ### Update w according to loss gradient and algorithm (incl, parameters therein)
     update!(w, dw, params)
 
-    ### Loss on training set and on validation set
+    ### Loss on training set and on validation set including early stopping
     ### Early stopping based on the validation set could be implemented (when validation loss gets worse again)
     ### but it will be heuristic, because one has to smooth the loss series (with batch there is noise)
     if rem(i,losscalcsize) == 1
-      push!(outputtimesteps,outputtimesteps[end]+losscalcsize)
-      push!(lossesTrain,loss(w, xTrain, yTrain))
-      push!(lossesVali, loss(w, xVali, yVali))
+      lossvali = loss(w, xVali, yVali)
+      if lossvali < best_val_cost
+        best_val_cost = lossvali
+        best_w = copy(w)
+        counter = 0
+      else
+        counter = counter + 1
+      end
+      if counter >= max_patience
+        info("Loss function did not decrease after $(max_patience) steps: early stopping")
+        break
+      end
+    push!(outputtimesteps,outputtimesteps[end]+losscalcsize)
+    push!(lossesTrain,loss(w, xTrain, yTrain))
+    push!(lossesVali, lossvali)
     end
 
     ### Output
@@ -182,6 +198,7 @@ function train_net(
 
     end
   end
+  model.weights = copy(best_w)
   return model
 end
 
